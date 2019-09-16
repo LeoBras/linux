@@ -342,7 +342,7 @@ void hpte_do_hugepage_flush(struct mm_struct *mm, unsigned long addr,
 }
 
 pmd_t hash__pmdp_huge_get_and_clear(struct mm_struct *mm,
-				unsigned long addr, pmd_t *pmdp)
+				    unsigned long addr, pmd_t *pmdp, bool full)
 {
 	pmd_t old_pmd;
 	pgtable_t pgtable;
@@ -373,7 +373,8 @@ pmd_t hash__pmdp_huge_get_and_clear(struct mm_struct *mm,
 	 * different code paths. So make sure we wait for the parallel
 	 * find_curren_mm_pte to finish.
 	 */
-	serialize_against_pte_lookup(mm);
+	if (!full)
+		serialize_against_pte_lookup(mm);
 	return old_pmd;
 }
 

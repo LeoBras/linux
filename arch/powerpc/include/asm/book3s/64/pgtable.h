@@ -1240,13 +1240,34 @@ extern int pmdp_set_access_flags(struct vm_area_struct *vma,
 extern int pmdp_test_and_clear_young(struct vm_area_struct *vma,
 				     unsigned long address, pmd_t *pmdp);
 
+static inline pmd_t __pmdp_huge_get_and_clear(struct mm_struct *mm,
+					      unsigned long addr, pmd_t *pmdp,
+					      bool full)
+{
+	if (radix_enabled())
+		return radix__pmdp_huge_get_and_clear(mm, addr, pmdp, full);
+	return hash__pmdp_huge_get_and_clear(mm, addr, pmdp, full);
+}
+
 #define __HAVE_ARCH_PMDP_HUGE_GET_AND_CLEAR
 static inline pmd_t pmdp_huge_get_and_clear(struct mm_struct *mm,
 					    unsigned long addr, pmd_t *pmdp)
 {
-	if (radix_enabled())
-		return radix__pmdp_huge_get_and_clear(mm, addr, pmdp);
-	return hash__pmdp_huge_get_and_clear(mm, addr, pmdp);
+	return radix__pmdp_huge_get_and_clear(mm, addr, pmdp, false);
+}
+
+#define __HAVE_ARCH_PMDP_HUGE_GET_AND_CLEAR_FULL
+static inline pmd_t pmdp_huge_get_and_clear_full(struct mm_struct *mm,
+						 unsigned long address, pmd_t *pmdp,
+						 int full)
+{
+	/*
+	 * A full mm flush is an indication that this is Task exit. We are not
+	 * worried about pmd transition from THP pte to level 4 pointer.
+	 * Hence we can avoid the unncessary IPI we do to make lockless page
+	 * table walk safe.
+	 */
+	return __pmdp_huge_get_and_clear(mm, address, pmdp, full);
 }
 
 static inline pmd_t pmdp_collapse_flush(struct vm_area_struct *vma,
