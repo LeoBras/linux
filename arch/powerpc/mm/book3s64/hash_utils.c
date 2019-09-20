@@ -1341,12 +1341,16 @@ int hash_page_mm(struct mm_struct *mm, unsigned long ea,
 		ea &= ~((1ul << mmu_psize_defs[psize].shift) - 1);
 #endif /* CONFIG_PPC_64K_PAGES */
 
-	/* Get PTE and page size from page tables */
+	/* Get PTE and page size from page tables :
+	 * Called in from DataAccess interrupt (data_access_common: 0x300),
+	 * interrupts are disabled here.
+	 */
+	__begin_lockless_pgtbl_walk(false);
 	ptep = find_linux_pte(pgdir, ea, &is_thp, &hugeshift);
 	if (ptep == NULL || !pte_present(*ptep)) {
 		DBG_LOW(" no PTE !\n");
 		rc = 1;
-		goto bail;
+		goto bail_pgtbl_walk;
 	}
 
 	/* Add _PAGE_PRESENT to the required access perm */
@@ -1359,7 +1363,7 @@ int hash_page_mm(struct mm_struct *mm, unsigned long ea,
 	if (!check_pte_access(access, pte_val(*ptep))) {
 		DBG_LOW(" no access !\n");
 		rc = 1;
-		goto bail;
+		goto bail_pgtbl_walk;
 	}
 
 	if (hugeshift) {
@@ -1383,7 +1387,7 @@ int hash_page_mm(struct mm_struct *mm, unsigned long ea,
 		if (current->mm == mm)
 			check_paca_psize(ea, mm, psize, user_region);
 
-		goto bail;
+		goto bail_pgtbl_walk;
 	}
 
 #ifndef CONFIG_PPC_64K_PAGES
@@ -1457,6 +1461,8 @@ int hash_page_mm(struct mm_struct *mm, unsigned long ea,
 #endif
 	DBG_LOW(" -> rc=%d\n", rc);
 
+bail_pgtbl_walk:
+	__end_lockless_pgtbl_walk(0, false);
 bail:
 	exception_exit(prev_state);
 	return rc;
@@ -1545,7 +1551,7 @@ static void hash_preload(struct mm_struct *mm, unsigned long ea,
 	unsigned long vsid;
 	pgd_t *pgdir;
 	pte_t *ptep;
-	unsigned long flags;
+	unsigned long irq_mask;
 	int rc, ssize, update_flags = 0;
 	unsigned long access = _PAGE_PRESENT | _PAGE_READ | (is_exec ? _PAGE_EXEC : 0);
 
@@ -1567,11 +1573,12 @@ static void hash_preload(struct mm_struct *mm, unsigned long ea,
 	vsid = get_user_vsid(&mm->context, ea, ssize);
 	if (!vsid)
 		return;
+
 	/*
 	 * Hash doesn't like irqs. Walking linux page table with irq disabled
 	 * saves us from holding multiple locks.
 	 */
-	local_irq_save(flags);
+	irq_mask = begin_lockless_pgtbl_walk();
 
 	/*
 	 * THP pages use update_mmu_cache_pmd. We don't do
@@ -1616,7 +1623,7 @@ static void hash_preload(struct mm_struct *mm, unsigned long ea,
 				   mm_ctx_user_psize(&mm->context),
 				   pte_val(*ptep));
 out_exit:
-	local_irq_restore(flags);
+	end_lockless_pgtbl_walk(irq_mask);
 }
 
 /*
@@ -1679,16 +1686,16 @@ u16 get_mm_addr_key(struct mm_struct *mm, unsigned long address)
 {
 	pte_t *ptep;
 	u16 pkey = 0;
-	unsigned long flags;
+	unsigned long irq_mask;
 
 	if (!mm || !mm->pgd)
 		return 0;
 
-	local_irq_save(flags);
+	irq_mask = begin_lockless_pgtbl_walk();
 	ptep = find_linux_pte(mm->pgd, address, NULL, NULL);
 	if (ptep)
 		pkey = pte_to_pkey_bits(pte_val(READ_ONCE(*ptep)));
-	local_irq_restore(flags);
+	end_lockless_pgtbl_walk(irq_mask);
 
 	return pkey;
 }
