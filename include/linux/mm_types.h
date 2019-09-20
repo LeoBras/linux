@@ -521,6 +521,17 @@ struct mm_struct {
 		struct work_struct async_put_work;
 	} __randomize_layout;
 
+#ifdef CONFIG_LOCKLESS_PAGE_TABLE_WALK_TRACKING
+	/*
+	 * Number of callers who are doing a lockless walk of the
+	 * page tables. Typically arches might enable this in order to
+	 * help optimize performance, by possibly avoiding expensive
+	 * IPIs at the wrong times.
+	 */
+	atomic_t lockless_pgtbl_walkers;
+
+#endif
+
 	/*
 	 * The mm_cpumask needs to be at the end of mm_struct, because it
 	 * is dynamically sized based on nr_cpu_ids.

@@ -1171,6 +1171,68 @@ static inline bool arch_has_pfn_modify_check(void)
 #endif
 #endif
 
+#ifndef __HAVE_ARCH_LOCKLESS_PGTBL_WALK_CONTROL
+static inline
+unsigned long begin_lockless_pgtbl_walk(struct mm_struct __maybe_unused *mm)
+{
+	unsigned long irq_mask;
+
+#ifdef CONFIG_LOCKLESS_PAGE_TABLE_WALK_TRACKING
+		atomic_inc(&mm->lockless_pgtbl_walkers);
+#endif
+	/*
+	 * Interrupts must be disabled during the lockless page table walk.
+	 * That's because the deleting or splitting involves flushing TLBs,
+	 * which in turn issues interrupts, that will block when disabled.
+	 */
+	local_irq_save(irq_mask);
+
+	/*
+	 * This memory barrier pairs with any code that is either trying to
+	 * delete page tables, or split huge pages. Without this barrier,
+	 * the page tables could be read speculatively outside of interrupt
+	 * disabling.
+	 */
+	smp_mb();
+
+	return irq_mask;
+}
+
+static inline void end_lockless_pgtbl_walk(struct mm_struct __maybe_unused *mm,
+					   unsigned long irq_mask)
+{
+	/*
+	 * This memory barrier pairs with any code that is either trying to
+	 * delete page tables, or split huge pages. Without this barrier,
+	 * the page tables could be read speculatively outside of interrupt
+	 * disabling.
+	 */
+	smp_mb();
+
+	/*
+	 * Interrupts must be disabled during the lockless page table walk.
+	 * That's because the deleting or splitting involves flushing TLBs,
+	 * which in turn issues interrupts, that will block when disabled.
+	 */
+	local_irq_restore(irq_mask);
+
+#ifdef CONFIG_LOCKLESS_PAGE_TABLE_WALK_TRACKING
+		atomic_dec(&mm->lockless_pgtbl_walkers);
+#endif
+}
+
+static inline
+int running_lockless_pgtbl_walk(struct mm_struct __maybe_unused *mm)
+{
+#ifdef CONFIG_LOCKLESS_PAGE_TABLE_WALK_TRACKING
+	return atomic_read(&mm->lockless_pgtbl_walkers);
+#endif
+
+	/* If disabled, must return > 0, so it falls back to sync method */
+	return 1;
+}
+#endif
+
 /*
  * On some architectures it depends on the mm if the p4d/pud or pmd
  * layer of the page table hierarchy is folded or not.
