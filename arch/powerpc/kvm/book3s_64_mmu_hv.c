@@ -615,12 +615,12 @@ int kvmppc_book3s_hv_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu,
 		/* if the guest wants write access, see if that is OK */
 		if (!writing && hpte_is_writable(r)) {
 			pte_t *ptep, pte;
-			unsigned long flags;
+			unsigned long irq_mask;
 			/*
 			 * We need to protect against page table destruction
 			 * hugepage split and collapse.
 			 */
-			local_irq_save(flags);
+			irq_mask = begin_lockless_pgtbl_walk(kvm->mm);
 			ptep = find_current_mm_pte(current->mm->pgd,
 						   hva, NULL, NULL);
 			if (ptep) {
@@ -628,7 +628,7 @@ int kvmppc_book3s_hv_page_fault(struct kvm_run *run, struct kvm_vcpu *vcpu,
 				if (__pte_write(pte))
 					write_ok = 1;
 			}
-			local_irq_restore(flags);
+			end_lockless_pgtbl_walk(kvm->mm, irq_mask);
 		}
 	}
 
