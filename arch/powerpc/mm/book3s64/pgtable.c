@@ -98,6 +98,23 @@ void serialize_against_pte_lookup(struct mm_struct *mm)
 	smp_call_function_many(mm_cpumask(mm), do_nothing, NULL, 1);
 }
 
+void start_lockless_pgtbl_walk(struct mm_struct *mm)
+{
+	atomic_inc(&mm->context.lockless_pgtbl_walk_count);
+}
+EXPORT_SYMBOL(start_lockless_pgtbl_walk);
+
+void end_lockless_pgtbl_walk(struct mm_struct *mm)
+{
+	atomic_dec(&mm->context.lockless_pgtbl_walk_count);
+}
+EXPORT_SYMBOL(end_lockless_pgtbl_walk);
+
+int running_lockless_pgtbl_walk(struct mm_struct *mm)
+{
+	return atomic_read(&mm->context.lockless_pgtbl_walk_count);
+}
+
 /*
  * We use this to invalidate a pmdp entry before switching from a
  * hugepte to regular pmd entry.

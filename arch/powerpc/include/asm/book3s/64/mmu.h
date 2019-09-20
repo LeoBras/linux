@@ -116,6 +116,9 @@ typedef struct {
 	/* Number of users of the external (Nest) MMU */
 	atomic_t copros;
 
+	/* Number of running instances of lockless pagetable walk*/
+	atomic_t lockless_pgtbl_walk_count;
+
 	struct hash_mm_context *hash_context;
 
 	unsigned long vdso_base;
