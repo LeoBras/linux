@@ -453,10 +453,14 @@ static long kvmppc_rm_ua_to_hpa(struct kvm_vcpu *vcpu,
 	 * to exit which will agains result in the below page table walk
 	 * to finish.
 	 */
+	__begin_lockless_pgtbl_walk(false);
 	ptep = __find_linux_pte(vcpu->arch.pgdir, ua, NULL, &shift);
-	if (!ptep || !pte_present(*ptep))
+	if (!ptep || !pte_present(*ptep)) {
+		__end_lockless_pgtbl_walk(0, false);
 		return -ENXIO;
+	}
 	pte = *ptep;
+	__end_lockless_pgtbl_walk(0, false);
 
 	if (!shift)
 		shift = PAGE_SHIFT;
