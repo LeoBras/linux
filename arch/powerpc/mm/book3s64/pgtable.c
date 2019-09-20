@@ -82,6 +82,7 @@ static void do_nothing(void *unused)
 {
 
 }
+
 /*
  * Serialize against find_current_mm_pte which does lock-less
  * lookup in page tables with local interrupts disabled. For huge pages
@@ -97,6 +98,89 @@ void serialize_against_pte_lookup(struct mm_struct *mm)
 	smp_mb();
 	smp_call_function_many(mm_cpumask(mm), do_nothing, NULL, 1);
 }
+
+/* begin_lockless_pgtbl_walk: Must be inserted before a function call that does
+ *   lockless pagetable walks, such as __find_linux_pte().
+ * This version allows setting disable_irq=false, so irqs are not touched, which
+ *   is quite useful for running when ints are already disabled (like real-mode)
+ */
+inline
+unsigned long __begin_lockless_pgtbl_walk(bool disable_irq)
+{
+	unsigned long irq_mask = 0;
+
+	/*
+	 * Interrupts must be disabled during the lockless page table walk.
+	 * That's because the deleting or splitting involves flushing TLBs,
+	 * which in turn issues interrupts, that will block when disabled.
+	 *
+	 * When this function is called from realmode with MSR[EE=0],
+	 * it's not needed to touch irq, since it's already disabled.
+	 */
+	if (disable_irq)
+		local_irq_save(irq_mask);
+
+	/*
+	 * This memory barrier pairs with any code that is either trying to
+	 * delete page tables, or split huge pages. Without this barrier,
+	 * the page tables could be read speculatively outside of interrupt
+	 * disabling or reference counting.
+	 */
+	smp_mb();
+
+	return irq_mask;
+}
+EXPORT_SYMBOL(__begin_lockless_pgtbl_walk);
+
+/* begin_lockless_pgtbl_walk: Must be inserted before a function call that does
+ *   lockless pagetable walks, such as __find_linux_pte().
+ * This version is used by generic code, and always assume irqs will be disabled
+ */
+unsigned long begin_lockless_pgtbl_walk(void)
+{
+	return __begin_lockless_pgtbl_walk(true);
+}
+EXPORT_SYMBOL(begin_lockless_pgtbl_walk);
+
+/*
+ * __end_lockless_pgtbl_walk: Must be inserted after the last use of a pointer
+ *   returned by a lockless pagetable walk, such as __find_linux_pte()
+ * This version allows setting enable_irq=false, so irqs are not touched, which
+ *   is quite useful for running when ints are already disabled (like real-mode)
+ */
+inline void __end_lockless_pgtbl_walk(unsigned long irq_mask, bool enable_irq)
+{
+	/*
+	 * This memory barrier pairs with any code that is either trying to
+	 * delete page tables, or split huge pages. Without this barrier,
+	 * the page tables could be read speculatively outside of interrupt
+	 * disabling or reference counting.
+	 */
+	smp_mb();
+
+	/*
+	 * Interrupts must be disabled during the lockless page table walk.
+	 * That's because the deleting or splitting involves flushing TLBs,
+	 * which in turn issues interrupts, that will block when disabled.
+	 *
+	 * When this function is called from realmode with MSR[EE=0],
+	 * it's not needed to touch irq, since it's already disabled.
+	 */
+	if (enable_irq)
+		local_irq_restore(irq_mask);
+}
+EXPORT_SYMBOL(__end_lockless_pgtbl_walk);
+
+/*
+ * end_lockless_pgtbl_walk: Must be inserted after the last use of a pointer
+ *   returned by a lockless pagetable walk, such as __find_linux_pte()
+ * This version is used by generic code, and always assume irqs will be enabled
+ */
+void end_lockless_pgtbl_walk(unsigned long irq_mask)
+{
+	__end_lockless_pgtbl_walk(irq_mask, true);
+}
+EXPORT_SYMBOL(end_lockless_pgtbl_walk);
 
 /*
  * We use this to invalidate a pmdp entry before switching from a
@@ -487,7 +571,7 @@ static int __init setup_disable_tlbie(char *str)
 	tlbie_capable = false;
 	tlbie_enabled = false;
 
-        return 1;
+	return 1;
 }
 __setup("disable_tlbie", setup_disable_tlbie);
 

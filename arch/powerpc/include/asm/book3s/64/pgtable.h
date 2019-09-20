@@ -1375,5 +1375,11 @@ static inline bool pgd_is_leaf(pgd_t pgd)
 	return !!(pgd_raw(pgd) & cpu_to_be64(_PAGE_PTE));
 }
 
+#define __HAVE_ARCH_LOCKLESS_PGTBL_WALK_CONTROL
+unsigned long begin_lockless_pgtbl_walk(void);
+unsigned long __begin_lockless_pgtbl_walk(bool disable_irq);
+void end_lockless_pgtbl_walk(unsigned long irq_mask);
+void __end_lockless_pgtbl_walk(unsigned long irq_mask, bool enable_irq);
+
 #endif /* __ASSEMBLY__ */
 #endif /* _ASM_POWERPC_BOOK3S_64_PGTABLE_H_ */
