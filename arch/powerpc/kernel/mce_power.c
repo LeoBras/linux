@@ -29,7 +29,7 @@ unsigned long addr_to_pfn(struct pt_regs *regs, unsigned long addr)
 {
 	pte_t *ptep;
 	unsigned int shift;
-	unsigned long pfn, flags;
+	unsigned long pfn, irq_mask;
 	struct mm_struct *mm;
 
 	if (user_mode(regs))
@@ -37,7 +37,7 @@ unsigned long addr_to_pfn(struct pt_regs *regs, unsigned long addr)
 	else
 		mm = &init_mm;
 
-	local_irq_save(flags);
+	irq_mask = begin_lockless_pgtbl_walk();
 	ptep = __find_linux_pte(mm->pgd, addr, NULL, &shift);
 
 	if (!ptep || pte_special(*ptep)) {
@@ -53,7 +53,7 @@ unsigned long addr_to_pfn(struct pt_regs *regs, unsigned long addr)
 	}
 
 out:
-	local_irq_restore(flags);
+	end_lockless_pgtbl_walk(irq_mask);
 	return pfn;
 }
 
