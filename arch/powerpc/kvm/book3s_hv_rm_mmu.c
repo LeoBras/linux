@@ -210,7 +210,7 @@ long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 	pte_t *ptep;
 	unsigned int writing;
 	unsigned long mmu_seq;
-	unsigned long rcbits, irq_flags = 0;
+	unsigned long rcbits, irq_mask = 0;
 
 	if (kvm_is_radix(kvm))
 		return H_FUNCTION;
@@ -252,8 +252,8 @@ long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 	 * If we had a page table table change after lookup, we would
 	 * retry via mmu_notifier_retry.
 	 */
-	if (!realmode)
-		local_irq_save(irq_flags);
+	irq_mask = __begin_lockless_pgtbl_walk(!realmode);
+
 	/*
 	 * If called in real mode we have MSR_EE = 0. Otherwise
 	 * we disable irq above.
@@ -272,8 +272,7 @@ long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 		 * to <= host page size, if host is using hugepage
 		 */
 		if (host_pte_size < psize) {
-			if (!realmode)
-				local_irq_restore(flags);
+			__end_lockless_pgtbl_walk(irq_mask, !realmode);
 			return H_PARAMETER;
 		}
 		pte = kvmppc_read_update_linux_pte(ptep, writing);
@@ -287,8 +286,6 @@ long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 			pa |= gpa & ~PAGE_MASK;
 		}
 	}
-	if (!realmode)
-		local_irq_restore(irq_flags);
 
 	ptel &= HPTE_R_KEY | HPTE_R_PP0 | (psize-1);
 	ptel |= pa;
@@ -302,8 +299,10 @@ long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 
 	/*If we had host pte mapping then  Check WIMG */
 	if (ptep && !hpte_cache_flags_ok(ptel, is_ci)) {
-		if (is_ci)
+		if (is_ci) {
+			__end_lockless_pgtbl_walk(irq_mask, !realmode);
 			return H_PARAMETER;
+		}
 		/*
 		 * Allow guest to map emulated device memory as
 		 * uncacheable, but actually make it cacheable.
@@ -311,6 +310,7 @@ long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 		ptel &= ~(HPTE_R_W|HPTE_R_I|HPTE_R_G);
 		ptel |= HPTE_R_M;
 	}
+	__end_lockless_pgtbl_walk(irq_mask, !realmode);
 
 	/* Find and lock the HPTEG slot to use */
  do_insert:
@@ -907,11 +907,19 @@ static int kvmppc_get_hpa(struct kvm_vcpu *vcpu, unsigned long gpa,
 	/* Translate to host virtual address */
 	hva = __gfn_to_hva_memslot(memslot, gfn);
 
-	/* Try to find the host pte for that virtual address */
+	/* Try to find the host pte for that virtual address :
+	 * Called by hcall_real_table (real mode + MSR_EE=0)
+	 * Interrupts are disabled here.
+	 */
+	__begin_lockless_pgtbl_walk(false);
 	ptep = __find_linux_pte(vcpu->arch.pgdir, hva, NULL, &shift);
-	if (!ptep)
+	if (!ptep) {
+		__end_lockless_pgtbl_walk(0, false);
 		return H_TOO_HARD;
+	}
 	pte = kvmppc_read_update_linux_pte(ptep, writing);
+	__end_lockless_pgtbl_walk(0, false);
+
 	if (!pte_present(pte))
 		return H_TOO_HARD;
 
