@@ -252,6 +252,7 @@ long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 	 * If we had a page table table change after lookup, we would
 	 * retry via mmu_notifier_retry.
 	 */
+	start_lockless_pgtbl_walk(kvm->mm);
 	if (!realmode)
 		local_irq_save(irq_flags);
 	/*
@@ -287,8 +288,6 @@ long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 			pa |= gpa & ~PAGE_MASK;
 		}
 	}
-	if (!realmode)
-		local_irq_restore(irq_flags);
 
 	ptel &= HPTE_R_KEY | HPTE_R_PP0 | (psize-1);
 	ptel |= pa;
@@ -311,6 +310,9 @@ long kvmppc_do_h_enter(struct kvm *kvm, unsigned long flags,
 		ptel &= ~(HPTE_R_W|HPTE_R_I|HPTE_R_G);
 		ptel |= HPTE_R_M;
 	}
+	if (!realmode)
+		local_irq_restore(irq_flags);
+	end_lockless_pgtbl_walk(kvm->mm);
 
 	/* Find and lock the HPTEG slot to use */
  do_insert:
@@ -885,11 +887,19 @@ static int kvmppc_get_hpa(struct kvm_vcpu *vcpu, unsigned long gpa,
 	/* Translate to host virtual address */
 	hva = __gfn_to_hva_memslot(memslot, gfn);
 
-	/* Try to find the host pte for that virtual address */
+	/* Try to find the host pte for that virtual address :
+	 * Called by hcall_real_table (real mode + MSR_EE=0)
+	 * Interrupts are disabled here.
+	 */
+	start_lockless_pgtbl_walk(kvm->mm);
 	ptep = __find_linux_pte(vcpu->arch.pgdir, hva, NULL, &shift);
-	if (!ptep)
+	if (!ptep) {
+		end_lockless_pgtbl_walk(kvm->mm);
 		return H_TOO_HARD;
+	}
 	pte = kvmppc_read_update_linux_pte(ptep, writing);
+	end_lockless_pgtbl_walk(kvm->mm);
+
 	if (!pte_present(pte))
 		return H_TOO_HARD;
 
