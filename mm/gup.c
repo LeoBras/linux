@@ -2319,7 +2319,7 @@ int __get_user_pages_fast(unsigned long start, int nr_pages, int write,
 			  struct page **pages)
 {
 	unsigned long len, end;
-	unsigned long flags;
+	unsigned long irq_mask;
 	int nr = 0;
 
 	start = untagged_addr(start) & PAGE_MASK;
@@ -2345,9 +2345,9 @@ int __get_user_pages_fast(unsigned long start, int nr_pages, int write,
 
 	if (IS_ENABLED(CONFIG_HAVE_FAST_GUP) &&
 	    gup_fast_permitted(start, end)) {
-		local_irq_save(flags);
+		irq_mask = begin_lockless_pgtbl_walk(current->mm);
 		gup_pgd_range(start, end, write ? FOLL_WRITE : 0, pages, &nr);
-		local_irq_restore(flags);
+		end_lockless_pgtbl_walk(current->mm, irq_mask);
 	}
 
 	return nr;
@@ -2414,9 +2414,9 @@ int get_user_pages_fast(unsigned long start, int nr_pages,
 
 	if (IS_ENABLED(CONFIG_HAVE_FAST_GUP) &&
 	    gup_fast_permitted(start, end)) {
-		local_irq_disable();
+		begin_lockless_pgtbl_walk(current->mm);
 		gup_pgd_range(addr, end, gup_flags, pages, &nr);
-		local_irq_enable();
+		end_lockless_pgtbl_walk(current->mm, IRQS_ENABLED);
 		ret = nr;
 	}
 
