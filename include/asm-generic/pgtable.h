@@ -1172,6 +1172,15 @@ static inline bool arch_has_pfn_modify_check(void)
 #endif
 #endif
 
+#ifndef __HAVE_ARCH_LOCKLESS_PGTBL_WALK_COUNTER
+static inline void start_lockless_pgtbl_walk(struct mm_struct *mm) { }
+static inline void end_lockless_pgtbl_walk(struct mm_struct *mm) { }
+static inline int running_lockless_pgtbl_walk(struct mm_struct *mm)
+{
+	return 0;
+}
+#endif
+
 /*
  * On some architectures it depends on the mm if the p4d/pud or pmd
  * layer of the page table hierarchy is folded or not.
