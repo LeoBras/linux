@@ -96,8 +96,22 @@ static DEFINE_PER_CPU(int, lockless_pgtbl_walk_counter);
  */
 void serialize_against_pte_lookup(struct mm_struct *mm)
 {
+	int cpu;
+	struct cpumask cm;
+
 	smp_mb();
-	smp_call_function_many(mm_cpumask(mm), do_nothing, NULL, 1);
+
+	/*
+	 * Fills a new cpumask only with cpus that are currently doing a
+	 * lockless pagetable walk. This reduces time spent in this function.
+	 */
+	cpumask_clear(&cm);
+	for_each_cpu(cpu, mm_cpumask((mm))) {
+		if (per_cpu(lockless_pgtbl_walk_counter, cpu) > 0)
+			cpumask_set_cpu(cpu, &cm);
+	}
+
+	smp_call_function_many(&cm, do_nothing, NULL, 1);
 }
 
 /* begin_lockless_pgtbl_walk: Must be inserted before a function call that does
