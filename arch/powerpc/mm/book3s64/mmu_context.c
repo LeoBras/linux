@@ -200,6 +200,7 @@ int init_new_context(struct task_struct *tsk, struct mm_struct *mm)
 #endif
 	atomic_set(&mm->context.active_cpus, 0);
 	atomic_set(&mm->context.copros, 0);
+	atomic_set(&mm->context.lockless_pgtbl_walk_count, 0);
 
 	return 0;
 }
