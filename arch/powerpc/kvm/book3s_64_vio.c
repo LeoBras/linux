@@ -253,10 +253,11 @@ static int kvm_spapr_tce_release(struct inode *inode, struct file *filp)
 		}
 	}
 
+	account_locked_vm(kvm->mm,
+		kvmppc_stt_pages(kvmppc_tce_pages(stt->size)), false);
+
 	kvm_put_kvm(stt->kvm);
 
-	account_locked_vm(current->mm,
-		kvmppc_stt_pages(kvmppc_tce_pages(stt->size)), false);
 	call_rcu(&stt->rcu, release_spapr_tce_table);
 
 	return 0;
@@ -272,6 +273,7 @@ long kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
 {
 	struct kvmppc_spapr_tce_table *stt = NULL;
 	struct kvmppc_spapr_tce_table *siter;
+	struct mm_struct mm = kvm->mm;
 	unsigned long npages, size = args->size;
 	int ret = -ENOMEM;
 
@@ -280,7 +282,7 @@ long kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
 		return -EINVAL;
 
 	npages = kvmppc_tce_pages(size);
-	ret = account_locked_vm(current->mm, kvmppc_stt_pages(npages), true);
+	ret = account_locked_vm(mm, kvmppc_stt_pages(npages), true);
 	if (ret)
 		return ret;
 
@@ -316,17 +318,16 @@ long kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
 
 	if (ret >= 0)
 		list_add_rcu(&stt->list, &kvm->arch.spapr_tce_tables);
-	else
-		kvm_put_kvm(kvm);
 
 	mutex_unlock(&kvm->lock);
 
 	if (ret >= 0)
 		return ret;
 
+	kvm_put_kvm(kvm);
 	kfree(stt);
  fail_acct:
-	account_locked_vm(current->mm, kvmppc_stt_pages(npages), false);
+	account_locked_vm(mm, kvmppc_stt_pages(npages), false);
 	return ret;
 }
 
