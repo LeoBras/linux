@@ -736,4 +736,15 @@ config ARCH_HAS_PTE_SPECIAL
 config ARCH_HAS_HUGEPD
 	bool
 
+config LOCKLESS_PAGE_TABLE_WALK_TRACKING
+	bool "Track (and optimize) lockless page table walks"
+	default n
+
+	help
+	  Maintain a reference count of active lockless page table
+	  walkers. This adds 4 bytes to struct mm size, and two atomic
+	  operations to calls such as get_user_pages_fast(). Some
+	  architectures can optimize lockless page table operations if
+	  this is enabled.
+
 endmenu
