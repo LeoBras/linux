@@ -103,4 +103,5 @@ install:
   - docker pull linuxppc/build:$IMAGE-$(uname -m)
 
 script:
+  - id
   - travis_wait 50 ./arch/powerpc/tools/ci-build.sh
