@@ -19,7 +19,5 @@ install:
   - docker pull linuxppc/build:$IMAGE-$(uname -m)
 
 script:
-  - id
-  - ls -ld $HOME/.ccache
-  - mkdir $HOME/.ccache/tmp
+  - mkdir -p $HOME/.ccache
   - travis_wait 50 ./arch/powerpc/tools/ci-build.sh
