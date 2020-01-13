@@ -1243,12 +1243,19 @@ extern int pmdp_test_and_clear_young(struct vm_area_struct *vma,
 				     unsigned long address, pmd_t *pmdp);
 
 #define __HAVE_ARCH_PMDP_HUGE_GET_AND_CLEAR
+static inline pmd_t __pmdp_huge_get_and_clear(struct mm_struct *mm,
+					      unsigned long addr, pmd_t *pmdp,
+					      bool unmap)
+{
+	if (radix_enabled())
+		return radix__pmdp_huge_get_and_clear(mm, addr, pmdp, !unmap);
+	return hash__pmdp_huge_get_and_clear(mm, addr, pmdp);
+}
+
 static inline pmd_t pmdp_huge_get_and_clear(struct mm_struct *mm,
 					    unsigned long addr, pmd_t *pmdp)
 {
-	if (radix_enabled())
-		return radix__pmdp_huge_get_and_clear(mm, addr, pmdp);
-	return hash__pmdp_huge_get_and_clear(mm, addr, pmdp);
+	return __pmdp_huge_get_and_clear(mm, addr, pmdp, false);
 }
 
 static inline pmd_t pmdp_collapse_flush(struct vm_area_struct *vma,
@@ -1336,6 +1343,18 @@ static inline int pud_pfn(pud_t pud)
 pte_t ptep_modify_prot_start(struct vm_area_struct *, unsigned long, pte_t *);
 void ptep_modify_prot_commit(struct vm_area_struct *, unsigned long,
 			     pte_t *, pte_t, pte_t);
+
+#define __HAVE_ARCH_PMDP_HUGE_GET_AND_CLEAR_FULL
+static inline pmd_t pmdp_huge_get_and_clear_full(struct mm_struct *mm,
+						 unsigned long address,
+						 pmd_t *pmdp,
+						 int full)
+{
+	/*
+	 * Called only on unmapping
+	 */
+	return __pmdp_huge_get_and_clear(mm, address, pmdp, true);
+}
 
 /*
  * Returns true for a R -> RW upgrade of pte

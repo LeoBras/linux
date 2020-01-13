@@ -1007,7 +1007,8 @@ pgtable_t radix__pgtable_trans_huge_withdraw(struct mm_struct *mm, pmd_t *pmdp)
 }
 
 pmd_t radix__pmdp_huge_get_and_clear(struct mm_struct *mm,
-				     unsigned long addr, pmd_t *pmdp)
+				     unsigned long addr, pmd_t *pmdp,
+				     bool serialize)
 {
 	pmd_t old_pmd;
 	unsigned long old;
@@ -1024,7 +1025,8 @@ pmd_t radix__pmdp_huge_get_and_clear(struct mm_struct *mm,
 	 * different code paths. So make sure we wait for the parallel
 	 * find_current_mm_pte to finish.
 	 */
-	serialize_against_pte_lookup(mm);
+	if (serialize)
+		serialize_against_pte_lookup(mm);
 	return old_pmd;
 }
 
