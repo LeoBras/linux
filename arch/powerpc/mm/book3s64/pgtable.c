@@ -83,6 +83,7 @@ static void do_nothing(void *unused)
 
 }
 
+static DEFINE_PER_CPU(int, lockless_pgtbl_walk_counter);
 /*
  * Serialize against find_current_mm_pte which does lock-less
  * lookup in page tables with local interrupts disabled. For huge pages
@@ -121,6 +122,15 @@ unsigned long __begin_lockless_pgtbl_walk(bool disable_irq)
 		local_irq_save(irq_mask);
 
 	/*
+	 * Counts this instance of lockless pagetable walk for this cpu.
+	 * Disables preempt to make sure there is no cpu change between
+	 * begin/end lockless pagetable walk, so that percpu counting
+	 * works fine.
+	 */
+	preempt_disable();
+	(*this_cpu_ptr(&lockless_pgtbl_walk_counter))++;
+
+	/*
 	 * This memory barrier pairs with any code that is either trying to
 	 * delete page tables, or split huge pages. Without this barrier,
 	 * the page tables could be read speculatively outside of interrupt
@@ -157,6 +167,14 @@ inline void __end_lockless_pgtbl_walk(unsigned long irq_mask, bool enable_irq)
 	 * disabling or reference counting.
 	 */
 	smp_mb();
+
+	/*
+	 * Removes this instance of lockless pagetable walk for this cpu.
+	 * Enables preempt only after end lockless pagetable walk,
+	 * so that percpu counting works fine.
+	 */
+	(*this_cpu_ptr(&lockless_pgtbl_walk_counter))--;
+	preempt_enable();
 
 	/*
 	 * Interrupts must be disabled during the lockless page table walk.
