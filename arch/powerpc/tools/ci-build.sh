@@ -33,6 +33,10 @@ cmd+="-v $HOME/.ccache:/ccache:rw "
 cmd+="-e CCACHE_DIR=/ccache "
 cmd+="-e CCACHE=1 "
 
+if [[ -n "$TARGETS" ]]; then
+    cmd+="-e TARGETS=$TARGETS "
+fi
+
 if [[ "$TARGET" == "kernel" ]]; then
     cmd+="-e QUIET=1 "
 fi
