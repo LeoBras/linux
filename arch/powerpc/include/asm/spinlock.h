@@ -111,6 +111,8 @@ static inline void splpar_spin_yield(arch_spinlock_t *lock) {};
 static inline void splpar_rw_yield(arch_rwlock_t *lock) {};
 #endif
 
+extern bool crash_skip_spinlock __read_mostly;
+
 static inline bool is_shared_processor(void)
 {
 #ifdef CONFIG_PPC_SPLPAR
@@ -142,6 +144,8 @@ static inline void arch_spin_lock(arch_spinlock_t *lock)
 		if (likely(__arch_spin_trylock(lock) == 0))
 			break;
 		do {
+			if (unlikely(crash_skip_spinlock))
+				return;
 			HMT_low();
 			if (is_shared_processor())
 				splpar_spin_yield(lock);
@@ -161,6 +165,8 @@ void arch_spin_lock_flags(arch_spinlock_t *lock, unsigned long flags)
 		local_save_flags(flags_dis);
 		local_irq_restore(flags);
 		do {
+			if (unlikely(crash_skip_spinlock))
+				return;
 			HMT_low();
 			if (is_shared_processor())
 				splpar_spin_yield(lock);

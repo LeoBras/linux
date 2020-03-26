@@ -66,6 +66,9 @@ static int handle_fault(struct pt_regs *regs)
 
 #ifdef CONFIG_SMP
 
+bool crash_skip_spinlock;
+EXPORT_SYMBOL(crash_skip_spinlock);
+
 static atomic_t cpus_in_crash;
 void crash_ipi_callback(struct pt_regs *regs)
 {
@@ -129,6 +132,7 @@ again:
 	/* Would it be better to replace the trap vector here? */
 
 	if (atomic_read(&cpus_in_crash) >= ncpus) {
+		crash_skip_spinlock = true;
 		printk(KERN_EMERG "IPI complete\n");
 		return;
 	}
