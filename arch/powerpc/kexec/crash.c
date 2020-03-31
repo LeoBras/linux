@@ -24,6 +24,7 @@
 #include <asm/smp.h>
 #include <asm/setjmp.h>
 #include <asm/debug.h>
+#include <asm/rtas.h>
 
 /*
  * The primary CPU waits a while for all secondary CPUs to enter. This is to
@@ -48,6 +49,8 @@ static int time_to_dump;
  * which propagates to all threads.
  */
 int crash_wake_offline;
+
+extern raw_spinlock_t logbuf_lock;
 
 #define CRASH_HANDLER_MAX 3
 /* List of shutdown handles */
@@ -129,6 +132,13 @@ again:
 	/* Would it be better to replace the trap vector here? */
 
 	if (atomic_read(&cpus_in_crash) >= ncpus) {
+		/*
+		 * At this point no other CPU is running, and some of them may
+		 * have been interrupted while holding one of the locks needed
+		 * to complete crashing. Free them so there is no deadlock.
+		 */
+		arch_spin_unlock(&logbuf_lock.raw_lock);
+		arch_spin_unlock(&rtas.lock);
 		printk(KERN_EMERG "IPI complete\n");
 		return;
 	}
