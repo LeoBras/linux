@@ -115,6 +115,7 @@ static void crash_kexec_prepare_cpus(int cpu)
 
 	crash_send_ipi(crash_ipi_callback);
 	smp_wmb();
+	printk_nmi_enter();
 
 again:
 	/*
