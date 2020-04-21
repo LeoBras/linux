@@ -307,6 +307,7 @@ struct kvm_arch {
 	u8 svm_enabled;
 	bool threads_indep;
 	bool nested_enable;
+	bool emulate_dpdes;
 	pgd_t *pgtable;
 	u64 process_table;
 	struct dentry *debugfs_dir;

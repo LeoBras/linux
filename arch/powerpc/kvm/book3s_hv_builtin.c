@@ -449,8 +449,20 @@ static long kvmppc_read_one_intr(bool *again)
 	u8 host_ipi;
 	int64_t rc;
 
-	if (xive_enabled())
+	if (xive_enabled()) {
+		struct kvm_vcpu *vcpu = local_paca->kvm_hstate.kvm_vcpu;
+		/*
+		 * If we got an external with EE=0, it must be a direct
+		 * external interrupt while we have LPCR[LPES] = 0.
+		 * Set irq_pending so that kvmppc_guest_entry_inject_int()
+		 * will set LPCR[LPES].
+		 */
+		if (!(vcpu->arch.shregs.msr & MSR_EE)) {
+			vcpu->arch.irq_pending = 1;
+			return 0;
+		}
 		return 1;
+	}
 
 	/* see if a host IPI is pending */
 	host_ipi = local_paca->kvm_hstate.host_ipi;
@@ -567,6 +579,7 @@ unsigned long kvmppc_rm_h_xirr(struct kvm_vcpu *vcpu)
 	if (!kvmppc_xics_enabled(vcpu))
 		return H_TOO_HARD;
 	if (xics_on_xive()) {
+		vcpu->arch.irq_pending = 0;
 		if (is_rm())
 			return xive_rm_h_xirr(vcpu);
 		if (unlikely(!__xive_vm_h_xirr))
@@ -828,14 +841,39 @@ EXPORT_SYMBOL_GPL(kvmppc_inject_interrupt_hv);
 void kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 {
 	int ext;
-	unsigned long lpcr;
+	unsigned long lpcr, old_lpcr;
+
+	lpcr = local_paca->kvm_hstate.kvm_vcore->lpcr;
+	old_lpcr = mfspr(SPRN_LPCR);
+
+	/* Can we inject a doorbell? */
+	if (vcpu->arch.doorbell_request) {
+		/*
+		 * DPDES doesn't work on >= P9 in 8 threads/core mode.
+		 * If we can deliver the doorbell directly then we do,
+		 * otherwise clear LPCR_LPES and set LPCR_MER so we
+		 * take an externel to the HV when the guest turns on
+		 * MSR[EE], then we can try again to deliver the
+		 * doorbell interrupt.
+		 */
+		if (vcpu->kvm->arch.emulate_dpdes) {
+			if (vcpu->arch.shregs.msr & MSR_EE) {
+				inject_interrupt(vcpu,
+					BOOK3S_INTERRUPT_DOORBELL, 0);
+				vcpu->arch.doorbell_request = 0;
+			} else if (!vcpu->arch.irq_pending) {
+				lpcr &= ~LPCR_LPES0;
+				lpcr |= (1UL << LPCR_MER_SH);
+			}
+		} else {
+			mtspr(SPRN_DPDES, 1);
+			vcpu->arch.doorbell_request = 0;
+		}
+	}
 
 	/* Insert EXTERNAL bit into LPCR at the MER bit position */
 	ext = (vcpu->arch.pending_exceptions >> BOOK3S_IRQPRIO_EXTERNAL) & 1;
-	lpcr = mfspr(SPRN_LPCR);
 	lpcr |= ext << LPCR_MER_SH;
-	mtspr(SPRN_LPCR, lpcr);
-	isync();
 
 	if (vcpu->arch.shregs.msr & MSR_EE) {
 		if (ext) {
@@ -850,11 +888,9 @@ void kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 		}
 	}
 
-	if (vcpu->arch.doorbell_request) {
-		mtspr(SPRN_DPDES, 1);
-		vcpu->arch.vcore->dpdes = 1;
-		smp_wmb();
-		vcpu->arch.doorbell_request = 0;
+	if (lpcr != old_lpcr) {
+		mtspr(SPRN_LPCR, lpcr);
+		isync();
 	}
 }
 

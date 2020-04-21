@@ -1985,7 +1985,10 @@ static int kvmppc_set_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 		vcpu->arch.pspb = set_reg_val(id, *val);
 		break;
 	case KVM_REG_PPC_DPDES:
-		vcpu->arch.vcore->dpdes = set_reg_val(id, *val);
+		if (vcpu->kvm->arch.emulate_dpdes)
+			vcpu->arch.doorbell_request = set_reg_val(id, *val);
+		else
+			vcpu->arch.vcore->dpdes = set_reg_val(id, *val);
 		break;
 	case KVM_REG_PPC_VTB:
 		vcpu->arch.vcore->vtb = set_reg_val(id, *val);
@@ -4934,6 +4937,12 @@ static int kvmppc_core_init_vm_hv(struct kvm *kvm)
 		 */
 		if (xics_on_xive())
 			lpcr |= LPCR_LPES;
+
+		/*
+		 * >= POWER9 with 8 threads/core ("big-core") needs
+		 * DPDES emulation, because DPDES always reads as 0.
+		 */
+		kvm->arch.emulate_dpdes = (threads_per_core == 8);
 	}
 
 	/*
