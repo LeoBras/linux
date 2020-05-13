@@ -16,6 +16,7 @@
 #include <asm/kexec.h>
 #include <asm/svm.h>
 #include <asm/ultravisor.h>
+#include <asm/rtas.h>
 
 #include "setup.h"
 
@@ -164,6 +165,23 @@ static struct slb_shadow * __init new_slb_shadow(int cpu, unsigned long limit)
 
 #endif /* CONFIG_PPC_BOOK3S_64 */
 
+/**
+ * new_rtas_args() - Allocates rtas args
+ * @cpu:	CPU number
+ * @limit:	Memory limit for this allocation
+ *
+ * Allocates a struct rtas_args and return it's pointer.
+ *
+ * Return:	Pointer to allocated rtas_args
+ */
+static struct rtas_args * __init new_rtas_args(int cpu, unsigned long limit)
+{
+	limit = min_t(unsigned long, limit, RTAS_INSTANTIATE_MAX);
+
+	return alloc_paca_data(sizeof(struct rtas_args), L1_CACHE_BYTES,
+			       limit, cpu);
+}
+
 /* The Paca is an array with one entry per processor.  Each contains an
  * lppaca, which contains the information shared between the
  * hypervisor and Linux.
@@ -202,6 +220,7 @@ void __init __nostackprotector initialise_paca(struct paca_struct *new_paca, int
 	/* For now -- if we have threads this will be adjusted later */
 	new_paca->tcd_ptr = &new_paca->tcd;
 #endif
+	new_paca->reentrant_args = NULL;
 }
 
 /* Put the paca pointer into r13 and SPRG_PACA */
@@ -274,6 +293,7 @@ void __init allocate_paca(int cpu)
 #ifdef CONFIG_PPC_BOOK3S_64
 	paca->slb_shadow_ptr = new_slb_shadow(cpu, limit);
 #endif
+	paca->reentrant_args = new_rtas_args(cpu, limit);
 	paca_struct_size += sizeof(struct paca_struct);
 }
 
