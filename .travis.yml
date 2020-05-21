@@ -11,11 +11,11 @@ env:
 matrix:
   include:
     - os:   linux
-      arch: ppc64le
+      arch: amd64
       env:  TARGET=kernel SUBARCH=ppc64le IMAGE=ubuntu-20.04 DEFCONFIG=ppc64le_defconfig
       name: "kernel: ppc64le (PPC_BOOK3S_64 && LITTLE_ENDIAN)"
     - os:   linux
-      arch: ppc64le
+      arch: amd64
       env:  TARGET=kernel SUBARCH=ppc64le IMAGE=ubuntu-20.04 DEFCONFIG=ppc64le_defconfig CLANG=1
       name: "kernel: ppc64le clang (PPC_BOOK3S_64 && LITTLE_ENDIAN)"
     - os:   linux
@@ -23,7 +23,7 @@ matrix:
       env:  TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=ppc64_defconfig
       name: "kernel: ppc64 (PPC_BOOK3S_64 && BIG_ENDIAN)"
     - os:   linux
-      arch: ppc64le
+      arch: amd64
       env:  TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=ppc64_defconfig CLANG=1
       name: "kernel: ppc64 clang (PPC_BOOK3S_64 && BIG_ENDIAN)"
     - os:   linux
