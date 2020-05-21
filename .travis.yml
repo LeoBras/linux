@@ -84,7 +84,7 @@ matrix:
       name: "selftests: ppc64 Ubuntu 20.04"
     - os:   linux
       arch: amd64
-      env:  TARGET=docs SUBARCH=ppc64le IMAGE=docs-19.10
+      env:  TARGET=docs SUBARCH=ppc64le IMAGE=docs-20.04
       name: "docs"
 
 install:
