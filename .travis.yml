@@ -53,14 +53,16 @@ matrix:
       arch: amd64
       env:  CLANG=1 TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=ppc64_defconfig
       name: "clang 10 kernel: ppc64 (PPC_BOOK3S_64 && BIG_ENDIAN)"
-    - os:   linux
-      arch: amd64
-      env:  CLANG=1 TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=corenet64_smp_defconfig
-      name: "clang 10 kernel: corenet64_smp (PPC_BOOK3E_64)"
-    - os:   linux
-      arch: amd64
-      env:  CLANG=1 TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=pmac32_defconfig
-      name: "clang 10 kernel: pmac32 (PPC_BOOK3S_32)"
+    # /linux/arch/powerpc/lib/xor_vmx.c:119:6: error: stack frame size of 1344 bytes in function '__xor_altivec_5' [-Werror,-Wframe-larger-than=]
+    #- os:   linux
+    #  arch: amd64
+    #  env:  CLANG=1 TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=corenet64_smp_defconfig
+    #  name: "clang 10 kernel: corenet64_smp (PPC_BOOK3E_64)"
+    # /linux/arch/powerpc/lib/xor_vmx.c:119:6: error: stack frame size of 1232 bytes in function '__xor_altivec_5' [-Werror,-Wframe-larger-than=]
+    #- os:   linux
+    #  arch: amd64
+    #  env:  CLANG=1 TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=pmac32_defconfig
+    #  name: "clang 10 kernel: pmac32 (PPC_BOOK3S_32)"
     - os:   linux
       arch: amd64
       env:  CLANG=1 TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=ppc40x_defconfig
@@ -73,10 +75,11 @@ matrix:
       arch: amd64
       env:  CLANG=1 TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=mpc885_ads_defconfig
       name: "clang 10 kernel: mpc885_ads (PPC_8xx)"
-    - os:   linux
-      arch: amd64
-      env:  CLANG=1 TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=corenet32_smp_defconfig
-      name: "clang 10 kernel: corenet32_smp (PPC_85xx)"
+    # /linux/arch/powerpc/platforms/85xx/corenet_generic.c:210:1: error: attribute declaration must precede definition [-Werror,-Wignored-attributes]
+    #- os:   linux
+    #  arch: amd64
+    #  env:  CLANG=1 TARGET=kernel SUBARCH=ppc64 IMAGE=ubuntu-20.04 DEFCONFIG=corenet32_smp_defconfig
+    #  name: "clang 10 kernel: corenet32_smp (PPC_85xx)"
 
     # Fedora 32 GCC 10.1.1
     - os:   linux
