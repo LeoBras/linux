@@ -1074,8 +1074,9 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 	u64 dma_addr, max_addr;
 	struct device_node *dn;
 	u32 ddw_avail[3];
+
 	struct direct_window *window;
-	struct property *win64;
+	struct property *win64, *dfl_win;
 	struct dynamic_dma_window_prop *ddwprop;
 	struct failed_ddw_pdn *fpdn;
 
@@ -1110,8 +1111,19 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 	if (ret)
 		goto out_failed;
 
-       /*
-	 * Query if there is a second window of size to map the
+	/*
+	 * First step of setting up DDW is removing the default DMA window,
+	 * if it's present. It will make all the resources available to the
+	 * new DDW window.
+	 * If anything fails after this, we need to restore it.
+	 */
+
+	dfl_win = of_find_property(pdn, "ibm,dma-window", NULL);
+	if (dfl_win)
+		remove_dma_window(pdn, ddw_avail, dfl_win);
+
+	/*
+	 * Query if there is a window of size to map the
 	 * whole partition.  Query returns number of windows, largest
 	 * block assigned to PE (partition endpoint), and two bitmasks
 	 * of page sizes: supported and supported for migrate-dma.
@@ -1219,6 +1231,8 @@ out_free_prop:
 	kfree(win64);
 
 out_failed:
+	if (dfl_win)
+		reset_dma_window(dev, pdn);
 
 	fpdn = kzalloc(sizeof(*fpdn), GFP_KERNEL);
 	if (!fpdn)
