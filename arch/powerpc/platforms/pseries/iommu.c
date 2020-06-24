@@ -371,7 +371,7 @@ static LIST_HEAD(direct_window_list);
 static DEFINE_SPINLOCK(direct_window_list_lock);
 /* protects initializing window twice for same device */
 static DEFINE_MUTEX(direct_window_init_mutex);
-#define DIRECT64_PROPNAME "linux,direct64-ddr-window-info"
+#define DMA64_PROPNAME "linux,dma64-ddr-window-info"
 
 static int tce_clearrange_multi_pSeriesLP(unsigned long start_pfn,
 					unsigned long num_pfn, const void *arg)
@@ -830,7 +830,7 @@ static void remove_ddw(struct device_node *np, bool remove_prop)
 	if (ret)
 		return;
 
-	win = of_find_property(np, DIRECT64_PROPNAME, NULL);
+	win = of_find_property(np, DMA64_PROPNAME, NULL);
 	if (!win)
 		return;
 
@@ -894,8 +894,8 @@ static int find_existing_ddw_windows(void)
 	if (!firmware_has_feature(FW_FEATURE_LPAR))
 		return 0;
 
-	for_each_node_with_property(pdn, DIRECT64_PROPNAME) {
-		direct64 = of_get_property(pdn, DIRECT64_PROPNAME, &len);
+	for_each_node_with_property(pdn, DMA64_PROPNAME) {
+		direct64 = of_get_property(pdn, DMA64_PROPNAME, &len);
 		if (!direct64)
 			continue;
 
@@ -1141,6 +1141,34 @@ static int ddw_property_create(struct property **ddw_win, const char *propname,
 	return 0;
 }
 
+static int iommu_table_update_window(struct iommu_table **tbl, int nid, unsigned long liobn,
+				     unsigned long win_addr, unsigned long page_shift,
+				     unsigned long window_size)
+{
+	struct iommu_table *new_tbl, *old_tbl;
+
+	new_tbl = iommu_pseries_alloc_table(nid);
+	if (!new_tbl)
+		return -ENOMEM;
+
+	old_tbl = *tbl;
+	new_tbl->it_index = liobn;
+	new_tbl->it_offset = win_addr >> page_shift;
+	new_tbl->it_page_shift = page_shift;
+	new_tbl->it_size = window_size >> page_shift;
+	new_tbl->it_base = old_tbl->it_base;
+	new_tbl->it_busno = old_tbl->it_busno;
+	new_tbl->it_blocksize = old_tbl->it_blocksize;
+	new_tbl->it_type = old_tbl->it_type;
+	new_tbl->it_ops = old_tbl->it_ops;
+
+	iommu_init_table(new_tbl, nid, old_tbl->it_reserved_start, old_tbl->it_reserved_end);
+	iommu_tce_table_put(old_tbl);
+	*tbl = new_tbl;
+
+	return 0;
+}
+
 /*
  * If the PE supports dynamic dma windows, and there is space for a table
  * that can map all pages in a linear offset, then setup such a table,
@@ -1164,7 +1192,9 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 	struct direct_window *window;
 	struct property *win64 = NULL;
 	struct failed_ddw_pdn *fpdn;
-	bool default_win_removed = false;
+	bool default_win_removed = false, maps_whole_partition = false;
+	struct pci_dn *pci = PCI_DN(pdn);
+	struct iommu_table *tbl = pci->table_group->tables[0];
 
 	mutex_lock(&direct_window_init_mutex);
 
@@ -1252,16 +1282,24 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 			  query.page_size);
 		goto out_failed;
 	}
+
 	/* verify the window * number of ptes will map the partition */
-	/* check largest block * page size > max memory hotplug addr */
 	max_addr = ddw_memory_hotplug_max();
 	if (query.largest_available_block < (max_addr >> page_shift)) {
-		dev_dbg(&dev->dev, "can't map partition max 0x%llx with %llu "
-			  "%llu-sized pages\n", max_addr,  query.largest_available_block,
-			  1ULL << page_shift);
-		goto out_failed;
+		dev_dbg(&dev->dev, "can't map partition max 0x%llx with %llu %llu-sized pages\n",
+			max_addr, query.largest_available_block,
+			1ULL << page_shift);
+
+		len = order_base_2(query.largest_available_block << page_shift);
+	} else {
+		maps_whole_partition = true;
+		len = order_base_2(max_addr);
 	}
-	len = order_base_2(max_addr);
+
+	/* DDW + IOMMU on single window may fail if there is any allocation */
+	if (default_win_removed && !maps_whole_partition &&
+	    iommu_table_in_use(tbl))
+		goto out_failed;
 
 	ret = create_ddw(dev, ddw_avail, &create, page_shift, len);
 	if (ret != 0)
@@ -1271,7 +1309,7 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 		create.liobn, dn);
 
 	dma_addr = ((u64)create.addr_hi << 32) | create.addr_lo;
-	ret = ddw_property_create(&win64, DIRECT64_PROPNAME, create.liobn, dma_addr,
+	ret = ddw_property_create(&win64, DMA64_PROPNAME, create.liobn, dma_addr,
 				  page_shift, len);
 	if (ret) {
 		dev_info(&dev->dev,
@@ -1291,6 +1329,18 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 	if (!window)
 		goto out_prop_del;
 
+	if (!maps_whole_partition) {
+		/* New table for using DDW instead of the default DMA window */
+		if (iommu_table_update_window(&tbl, pci->phb->node, create.liobn,
+					      dma_addr, page_shift, 1UL << len))
+			goto out_free_window;
+
+		set_iommu_table_base(&dev->dev, tbl);
+		WARN_ON(dev->dev.archdata.dma_offset >= SZ_4G);
+		goto out_unlock;
+	}
+
+	/* DDW maps the whole partition, so enable direct DMA mapping */
 	ret = walk_system_ram_range(0, memblock_end_of_DRAM() >> PAGE_SHIFT,
 			win64->value, tce_setrange_multi_pSeriesLP_walk);
 	if (ret) {
