@@ -154,6 +154,9 @@ extern int iommu_tce_table_put(struct iommu_table *tbl);
  */
 extern struct iommu_table *iommu_init_table(struct iommu_table *tbl,
 		int nid, unsigned long res_start, unsigned long res_end);
+void iommu_table_update(struct iommu_table *tbl, int nid, unsigned long liobn,
+			unsigned long win_addr, unsigned long page_shift,
+			unsigned long window_shift);
 
 #define IOMMU_TABLE_GROUP_MAX_TABLES	2
 

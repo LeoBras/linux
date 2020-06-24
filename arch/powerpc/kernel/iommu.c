@@ -774,6 +774,21 @@ static void iommu_table_free(struct kref *kref)
 	kfree(tbl);
 }
 
+void iommu_table_update(struct iommu_table *tbl, int nid, unsigned long liobn,
+			unsigned long win_addr, unsigned long page_shift,
+			unsigned long window_shift)
+{
+	iommu_table_clean(tbl);
+
+	/* Update tlb with values from ddw */
+	tbl->it_index = liobn;
+	tbl->it_offset = win_addr >> page_shift;
+	tbl->it_page_shift = page_shift;
+	tbl->it_size = 1 << (window_shift - page_shift);
+
+	iommu_init_table(tbl, nid, 0, 0);
+}
+
 struct iommu_table *iommu_tce_table_get(struct iommu_table *tbl)
 {
 	if (kref_get_unless_zero(&tbl->it_kref))
