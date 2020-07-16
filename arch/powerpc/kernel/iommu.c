@@ -735,13 +735,10 @@ struct iommu_table *iommu_init_table(struct iommu_table *tbl, int nid,
 	return tbl;
 }
 
-static void iommu_table_free(struct kref *kref)
+static void __iommu_table_free(struct iommu_table *tbl)
 {
 	unsigned long bitmap_sz;
 	unsigned int order;
-	struct iommu_table *tbl;
-
-	tbl = container_of(kref, struct iommu_table, it_kref);
 
 	if (tbl->it_ops->free)
 		tbl->it_ops->free(tbl);
@@ -763,9 +760,33 @@ static void iommu_table_free(struct kref *kref)
 	/* free bitmap */
 	order = get_order(bitmap_sz);
 	free_pages((unsigned long) tbl->it_map, order);
+}
+
+static void iommu_table_free(struct kref *kref)
+{
+	struct iommu_table *tbl;
+
+	tbl = container_of(kref, struct iommu_table, it_kref);
+
+	__iommu_table_free(tbl);
 
 	/* free table */
 	kfree(tbl);
+}
+
+void iommu_table_update(struct iommu_table *tbl, int nid, unsigned long liobn,
+			unsigned long win_addr, unsigned long page_shift,
+			unsigned long window_shift)
+{
+	__iommu_table_free(tbl);
+
+	/* Update tlb with values from ddw */
+	tbl->it_index = liobn;
+	tbl->it_offset = win_addr >> page_shift;
+	tbl->it_page_shift = page_shift;
+	tbl->it_size = 1 << (window_shift - page_shift);
+
+	iommu_init_table(tbl, nid, 0, 0);
 }
 
 struct iommu_table *iommu_tce_table_get(struct iommu_table *tbl)

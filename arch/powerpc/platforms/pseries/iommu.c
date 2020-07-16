@@ -691,7 +691,7 @@ static void pci_dma_bus_setup_pSeriesLP(struct pci_bus *bus)
 	struct iommu_table *tbl;
 	struct device_node *dn, *pdn;
 	struct pci_dn *ppci;
-	const __be32 *dma_window = NULL, *alt_dma_window = NULL;
+	const __be32 *dma_window = NULL;
 
 	dn = pci_bus_to_OF_node(bus);
 
@@ -708,14 +708,8 @@ static void pci_dma_bus_setup_pSeriesLP(struct pci_bus *bus)
 			break;
 	}
 
-	/* If there is a DDW available, use it instead */
-	alt_dma_window = of_get_property(pdn, DMA64_PROPNAME, NULL);
-	if (alt_dma_window)
-		dma_window = alt_dma_window;
-
 	if (dma_window == NULL) {
-		pr_debug("  no %s nor %s property !\n",
-			 DEFAULT_DMA_WIN, DMA64_PROPNAME);
+		pr_debug("  no %s property !\n", DEFAULT_DMA_WIN);
 		return;
 	}
 
@@ -1316,6 +1310,22 @@ out_unlock:
 	return dma_addr;
 }
 
+static void iommu_pseries_table_update(struct pci_dev *dev,
+				       struct device_node *pdn)
+{
+	const struct dynamic_dma_window_prop *ddw;
+	struct pci_dn *pci;
+	int len;
+
+	ddw = of_get_property(pdn, DMA64_PROPNAME, &len);
+	if (!ddw  || len < sizeof(struct dynamic_dma_window_prop))
+		return;
+
+	iommu_table_update(pci->table_group->tables[0], pci->phb->node,
+			   ddw->liobn, ddw->dma_base, ddw->tce_shift,
+			   ddw->window_shift);
+}
+
 static void pci_dma_dev_setup_pSeriesLP(struct pci_dev *dev)
 {
 	struct device_node *pdn, *dn;
@@ -1396,6 +1406,7 @@ static bool iommu_bypass_supported_pSeriesLP(struct pci_dev *pdev, u64 dma_mask)
 		pdev->dev.archdata.dma_offset = enable_ddw(pdev, pdn);
 		if (pdev->dev.archdata.dma_offset)
 			return true;
+		iommu_pseries_table_update(pdev, pdn);
 	}
 
 	return false;
