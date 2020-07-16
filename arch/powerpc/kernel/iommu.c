@@ -735,21 +735,10 @@ struct iommu_table *iommu_init_table(struct iommu_table *tbl, int nid,
 	return tbl;
 }
 
-static void iommu_table_free(struct kref *kref)
+static void iommu_table_clean(struct iommu_table *tbl)
 {
 	unsigned long bitmap_sz;
 	unsigned int order;
-	struct iommu_table *tbl;
-
-	tbl = container_of(kref, struct iommu_table, it_kref);
-
-	if (tbl->it_ops->free)
-		tbl->it_ops->free(tbl);
-
-	if (!tbl->it_map) {
-		kfree(tbl);
-		return;
-	}
 
 	iommu_table_release_pages(tbl);
 
@@ -763,6 +752,23 @@ static void iommu_table_free(struct kref *kref)
 	/* free bitmap */
 	order = get_order(bitmap_sz);
 	free_pages((unsigned long) tbl->it_map, order);
+}
+
+static void iommu_table_free(struct kref *kref)
+{
+	struct iommu_table *tbl;
+
+	tbl = container_of(kref, struct iommu_table, it_kref);
+
+	if (tbl->it_ops->free)
+		tbl->it_ops->free(tbl);
+
+	if (!tbl->it_map) {
+		kfree(tbl);
+		return;
+	}
+
+	iommu_table_clean(tbl);
 
 	/* free table */
 	kfree(tbl);
