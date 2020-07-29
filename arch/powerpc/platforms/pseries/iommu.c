@@ -1116,6 +1116,31 @@ static void reset_dma_window(struct pci_dev *dev, struct device_node *par_dn)
 			 ret);
 }
 
+static int ddw_property_create(struct property **ddw_win, const char *propname,
+			       u32 liobn, u64 dma_addr, u32 page_shift, u32 window_shift)
+{
+	struct dynamic_dma_window_prop *ddwprop;
+	struct property *win64;
+
+	*ddw_win = win64 = kzalloc(sizeof(*win64), GFP_KERNEL);
+	if (!win64)
+		return -ENOMEM;
+
+	win64->name = kstrdup(propname, GFP_KERNEL);
+	ddwprop = kmalloc(sizeof(*ddwprop), GFP_KERNEL);
+	win64->value = ddwprop;
+	win64->length = sizeof(*ddwprop);
+	if (!win64->name || !win64->value)
+		return -ENOMEM;
+
+	ddwprop->liobn = cpu_to_be32(liobn);
+	ddwprop->dma_base = cpu_to_be64(dma_addr);
+	ddwprop->tce_shift = cpu_to_be32(page_shift);
+	ddwprop->window_shift = cpu_to_be32(window_shift);
+
+	return 0;
+}
+
 /*
  * If the PE supports dynamic dma windows, and there is space for a table
  * that can map all pages in a linear offset, then setup such a table,
@@ -1133,12 +1158,11 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 	struct ddw_query_response query;
 	struct ddw_create_response create;
 	int page_shift;
-	u64 dma_addr, max_addr;
+	u64 dma_addr, max_addr, ret_addr = 0;
 	struct device_node *dn;
 	u32 ddw_avail[DDW_APPLICABLE_SIZE];
 	struct direct_window *window;
-	struct property *win64;
-	struct dynamic_dma_window_prop *ddwprop;
+	struct property *win64 = NULL;
 	struct failed_ddw_pdn *fpdn;
 	bool default_win_removed = false;
 
@@ -1238,38 +1262,34 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 		goto out_failed;
 	}
 	len = order_base_2(max_addr);
-	win64 = kzalloc(sizeof(struct property), GFP_KERNEL);
-	if (!win64) {
-		dev_info(&dev->dev,
-			"couldn't allocate property for 64bit dma window\n");
-		goto out_failed;
-	}
-	win64->name = kstrdup(DIRECT64_PROPNAME, GFP_KERNEL);
-	win64->value = ddwprop = kmalloc(sizeof(*ddwprop), GFP_KERNEL);
-	win64->length = sizeof(*ddwprop);
-	if (!win64->name || !win64->value) {
-		dev_info(&dev->dev,
-			"couldn't allocate property name and value\n");
-		goto out_free_prop;
-	}
 
 	ret = create_ddw(dev, ddw_avail, &create, page_shift, len);
 	if (ret != 0)
-		goto out_free_prop;
-
-	ddwprop->liobn = cpu_to_be32(create.liobn);
-	ddwprop->dma_base = cpu_to_be64(((u64)create.addr_hi << 32) |
-			create.addr_lo);
-	ddwprop->tce_shift = cpu_to_be32(page_shift);
-	ddwprop->window_shift = cpu_to_be32(len);
+		goto out_failed;
 
 	dev_dbg(&dev->dev, "created tce table LIOBN 0x%x for %pOF\n",
-		  create.liobn, dn);
+		create.liobn, dn);
+
+	dma_addr = ((u64)create.addr_hi << 32) | create.addr_lo;
+	ret = ddw_property_create(&win64, DIRECT64_PROPNAME, create.liobn, dma_addr,
+				  page_shift, len);
+	if (ret) {
+		dev_info(&dev->dev,
+			 "couldn't allocate property, property name, or value\n");
+		goto out_free_prop;
+	}
+
+	ret = of_add_property(pdn, win64);
+	if (ret) {
+		dev_err(&dev->dev, "unable to add dma window property for %pOF: %d",
+			pdn, ret);
+		goto out_free_prop;
+	}
 
 	/* Add new window to existing DDW list */
-	window = ddw_list_add(pdn, ddwprop);
+	window = ddw_list_add(pdn, win64->value);
 	if (!window)
-		goto out_clear_window;
+		goto out_prop_del;
 
 	ret = walk_system_ram_range(0, memblock_end_of_DRAM() >> PAGE_SHIFT,
 			win64->value, tce_setrange_multi_pSeriesLP_walk);
@@ -1279,14 +1299,7 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 		goto out_free_window;
 	}
 
-	ret = of_add_property(pdn, win64);
-	if (ret) {
-		dev_err(&dev->dev, "unable to add dma window property for %pOF: %d",
-			 pdn, ret);
-		goto out_free_window;
-	}
-
-	dma_addr = be64_to_cpu(ddwprop->dma_base);
+	ret_addr = dma_addr;
 	goto out_unlock;
 
 out_free_window:
@@ -1296,13 +1309,17 @@ out_free_window:
 
 	kfree(window);
 
-out_clear_window:
-	remove_ddw(pdn, true);
+out_prop_del:
+	of_remove_property(pdn, win64);
 
 out_free_prop:
-	kfree(win64->name);
-	kfree(win64->value);
-	kfree(win64);
+	if (win64) {
+		kfree(win64->name);
+		kfree(win64->value);
+		kfree(win64);
+	}
+
+	remove_ddw(pdn, true);
 
 out_failed:
 	if (default_win_removed)
@@ -1316,7 +1333,7 @@ out_failed:
 
 out_unlock:
 	mutex_unlock(&direct_window_init_mutex);
-	return dma_addr;
+	return ret_addr;
 }
 
 static void pci_dma_dev_setup_pSeriesLP(struct pci_dev *dev)
