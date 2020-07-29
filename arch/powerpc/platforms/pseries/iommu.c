@@ -866,6 +866,24 @@ static u64 find_existing_ddw(struct device_node *pdn)
 	return dma_addr;
 }
 
+static struct direct_window *ddw_list_add(struct device_node *pdn,
+					  const struct dynamic_dma_window_prop *dma64)
+{
+	struct direct_window *window;
+
+	window = kzalloc(sizeof(*window), GFP_KERNEL);
+	if (!window)
+		return NULL;
+
+	window->device = pdn;
+	window->prop = dma64;
+	spin_lock(&direct_window_list_lock);
+	list_add(&window->list, &direct_window_list);
+	spin_unlock(&direct_window_list_lock);
+
+	return window;
+}
+
 static int find_existing_ddw_windows(void)
 {
 	int len;
@@ -881,18 +899,11 @@ static int find_existing_ddw_windows(void)
 		if (!direct64)
 			continue;
 
-		window = kzalloc(sizeof(*window), GFP_KERNEL);
-		if (!window || len < sizeof(struct dynamic_dma_window_prop)) {
+		window = ddw_list_add(pdn, direct64);
+		if (!window || len < sizeof(*direct64)) {
 			kfree(window);
 			remove_ddw(pdn, true);
-			continue;
 		}
-
-		window->device = pdn;
-		window->prop = direct64;
-		spin_lock(&direct_window_list_lock);
-		list_add(&window->list, &direct_window_list);
-		spin_unlock(&direct_window_list_lock);
 	}
 
 	return 0;
@@ -1255,7 +1266,8 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 	dev_dbg(&dev->dev, "created tce table LIOBN 0x%x for %pOF\n",
 		  create.liobn, dn);
 
-	window = kzalloc(sizeof(*window), GFP_KERNEL);
+	/* Add new window to existing DDW list */
+	window = ddw_list_add(pdn, ddwprop);
 	if (!window)
 		goto out_clear_window;
 
@@ -1274,16 +1286,14 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 		goto out_free_window;
 	}
 
-	window->device = pdn;
-	window->prop = ddwprop;
-	spin_lock(&direct_window_list_lock);
-	list_add(&window->list, &direct_window_list);
-	spin_unlock(&direct_window_list_lock);
-
 	dma_addr = be64_to_cpu(ddwprop->dma_base);
 	goto out_unlock;
 
 out_free_window:
+	spin_lock(&direct_window_list_lock);
+	list_del(&window->list);
+	spin_unlock(&direct_window_list_lock);
+
 	kfree(window);
 
 out_clear_window:
