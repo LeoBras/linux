@@ -40,8 +40,6 @@
 
 static int novmerge;
 
-static void __iommu_free(struct iommu_table *, dma_addr_t, unsigned int);
-
 static int __init setup_iommu(char *str)
 {
 	if (!strcmp(str, "novmerge"))
@@ -308,6 +306,10 @@ static dma_addr_t iommu_alloc(struct device *dev, struct iommu_table *tbl,
 	dma_addr_t ret = DMA_MAPPING_ERROR;
 	int build_fail;
 
+	ret = iommu_dmacache_use(tbl, page, npages, direction);
+	if (ret != DMA_MAPPING_ERROR)
+		return ret;
+
 	entry = iommu_range_alloc(dev, tbl, npages, NULL, mask, align_order);
 
 	if (unlikely(entry == DMA_MAPPING_ERROR))
@@ -337,6 +339,8 @@ static dma_addr_t iommu_alloc(struct device *dev, struct iommu_table *tbl,
 
 	/* Make sure updates are seen by hardware */
 	mb();
+
+	iommu_dmacache_add(tbl, page, npages, ret, direction);
 
 	return ret;
 }
@@ -388,8 +392,7 @@ static struct iommu_pool *get_pool(struct iommu_table *tbl,
 	return p;
 }
 
-static void __iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr,
-			 unsigned int npages)
+void __iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr, unsigned int npages)
 {
 	unsigned long entry, free_entry;
 	unsigned long flags;
@@ -413,7 +416,7 @@ static void __iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr,
 static void iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr,
 		unsigned int npages)
 {
-	__iommu_free(tbl, dma_addr, npages);
+	iommu_dmacache_free(tbl, dma_addr, npages);
 
 	/* Make sure TLB cache is flushed if the HW needs it. We do
 	 * not do an mb() here on purpose, it is not needed on any of
@@ -720,6 +723,8 @@ struct iommu_table *iommu_init_table(struct iommu_table *tbl, int nid,
 	p->end = tbl->it_size;
 
 	iommu_table_clear(tbl);
+
+	iommu_cache_init(tbl);
 
 	if (!welcomed) {
 		printk(KERN_INFO "IOMMU table initialized, virtual merging %s\n",
