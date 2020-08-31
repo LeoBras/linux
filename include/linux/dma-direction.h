@@ -9,4 +9,7 @@ enum dma_data_direction {
 	DMA_NONE = 3,
 };
 
+/* Checks if wanted direction is satisfied by current mapping direction*/
+#define DMA_DIR_COMPAT(current, wanted)	(((current) & ~(wanted)) == 0)
+
 #endif
