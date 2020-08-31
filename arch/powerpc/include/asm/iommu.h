@@ -18,6 +18,7 @@
 #include <asm/types.h>
 #include <asm/pci-bridge.h>
 #include <asm/asm-const.h>
+#include <asm/iommu-cache.h>
 
 #define IOMMU_PAGE_SHIFT_4K      12
 #define IOMMU_PAGE_SIZE_4K       (ASM_CONST(1) << IOMMU_PAGE_SHIFT_4K)
@@ -114,6 +115,7 @@ struct iommu_table {
 	int it_nid;
 	unsigned long it_reserved_start; /* Start of not-DMA-able (MMIO) area */
 	unsigned long it_reserved_end;
+	struct dmacache cache;
 };
 
 #define IOMMU_TABLE_USERSPACE_ENTRY_RO(tbl, entry) \
@@ -316,6 +318,8 @@ extern void iommu_release_ownership(struct iommu_table *tbl);
 
 extern enum dma_data_direction iommu_tce_direction(unsigned long tce);
 extern unsigned long iommu_direction_to_tce_perm(enum dma_data_direction dir);
+
+void __iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr, unsigned int npages);
 
 #ifdef CONFIG_PPC_CELL_NATIVE
 extern bool iommu_fixed_is_weak;
