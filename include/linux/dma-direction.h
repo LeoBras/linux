@@ -9,6 +9,9 @@ enum dma_data_direction {
 	DMA_NONE = 3,
 };
 
+/* Checks if wanted direction is satisfied by current mapping direction*/
+#define DMA_DIR_COMPAT(current, wanted)	(((current) & ~(wanted)) == 0)
+
 static inline int valid_dma_direction(enum dma_data_direction dir)
 {
 	return dir == DMA_BIDIRECTIONAL || dir == DMA_TO_DEVICE ||
