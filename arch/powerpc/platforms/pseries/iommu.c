@@ -375,6 +375,7 @@ static DEFINE_SPINLOCK(direct_window_list_lock);
 /* protects initializing window twice for same device */
 static DEFINE_MUTEX(direct_window_init_mutex);
 #define DIRECT64_PROPNAME "linux,direct64-ddr-window-info"
+#define DMA64_PROPNAME "linux,dma64-ddr-window-info"
 
 static int tce_clearrange_multi_pSeriesLP(unsigned long start_pfn,
 					unsigned long num_pfn, const void *arg)
@@ -846,10 +847,48 @@ static int remove_ddw(struct device_node *np, bool remove_prop, const char *win_
 	return 0;
 }
 
-static bool find_existing_ddw(struct device_node *pdn, u64 *dma_addr)
+static phys_addr_t ddw_memory_hotplug_max(void)
+{
+	phys_addr_t max_addr = memory_hotplug_max();
+	struct device_node *memory;
+
+	/*
+	 * The "ibm,pmemory" can appear anywhere in the address space.
+	 * Assuming it is still backed by page structs, set the upper limit
+	 * for the huge DMA window as MAX_PHYSMEM_BITS.
+	 */
+	if (of_find_node_by_type(NULL, "ibm,pmemory"))
+		return (sizeof(phys_addr_t) * 8 <= MAX_PHYSMEM_BITS) ?
+			(phys_addr_t)-1 : (1ULL << MAX_PHYSMEM_BITS);
+
+	for_each_node_by_type(memory, "memory") {
+		unsigned long start, size;
+		int n_mem_addr_cells, n_mem_size_cells, len;
+		const __be32 *memcell_buf;
+
+		memcell_buf = of_get_property(memory, "reg", &len);
+		if (!memcell_buf || len <= 0)
+			continue;
+
+		n_mem_addr_cells = of_n_addr_cells(memory);
+		n_mem_size_cells = of_n_size_cells(memory);
+
+		start = of_read_number(memcell_buf, n_mem_addr_cells);
+		memcell_buf += n_mem_addr_cells;
+		size = of_read_number(memcell_buf, n_mem_size_cells);
+		memcell_buf += n_mem_size_cells;
+
+		max_addr = max_t(phys_addr_t, max_addr, start + size);
+	}
+
+	return max_addr;
+}
+
+static bool find_existing_ddw(struct device_node *pdn, u64 *dma_addr, bool *direct_mapping)
 {
 	struct direct_window *window;
 	const struct dynamic_dma_window_prop *direct64;
+	unsigned long window_size;
 	bool found = false;
 
 	spin_lock(&direct_window_list_lock);
@@ -858,6 +897,10 @@ static bool find_existing_ddw(struct device_node *pdn, u64 *dma_addr)
 		if (window->device == pdn) {
 			direct64 = window->prop;
 			*dma_addr = be64_to_cpu(direct64->dma_base);
+
+			window_size = (1UL << be32_to_cpu(direct64->window_shift));
+			*direct_mapping = (window_size >= ddw_memory_hotplug_max());
+
 			found = true;
 			break;
 		}
@@ -912,6 +955,7 @@ static int find_existing_ddw_windows(void)
 		return 0;
 
 	find_existing_ddw_windows_named(DIRECT64_PROPNAME);
+	find_existing_ddw_windows_named(DMA64_PROPNAME);
 
 	return 0;
 }
@@ -1054,43 +1098,6 @@ struct failed_ddw_pdn {
 
 static LIST_HEAD(failed_ddw_pdn_list);
 
-static phys_addr_t ddw_memory_hotplug_max(void)
-{
-	phys_addr_t max_addr = memory_hotplug_max();
-	struct device_node *memory;
-
-	/*
-	 * The "ibm,pmemory" can appear anywhere in the address space.
-	 * Assuming it is still backed by page structs, set the upper limit
-	 * for the huge DMA window as MAX_PHYSMEM_BITS.
-	 */
-	if (of_find_node_by_type(NULL, "ibm,pmemory"))
-		return (sizeof(phys_addr_t) * 8 <= MAX_PHYSMEM_BITS) ?
-			(phys_addr_t) -1 : (1ULL << MAX_PHYSMEM_BITS);
-
-	for_each_node_by_type(memory, "memory") {
-		unsigned long start, size;
-		int n_mem_addr_cells, n_mem_size_cells, len;
-		const __be32 *memcell_buf;
-
-		memcell_buf = of_get_property(memory, "reg", &len);
-		if (!memcell_buf || len <= 0)
-			continue;
-
-		n_mem_addr_cells = of_n_addr_cells(memory);
-		n_mem_size_cells = of_n_size_cells(memory);
-
-		start = of_read_number(memcell_buf, n_mem_addr_cells);
-		memcell_buf += n_mem_addr_cells;
-		size = of_read_number(memcell_buf, n_mem_size_cells);
-		memcell_buf += n_mem_size_cells;
-
-		max_addr = max_t(phys_addr_t, max_addr, start + size);
-	}
-
-	return max_addr;
-}
-
 /*
  * Platforms supporting the DDW option starting with LoPAR level 2.7 implement
  * ibm,ddw-extensions, which carries the rtas token for
@@ -1173,14 +1180,19 @@ static bool enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 	struct device_node *dn;
 	u32 ddw_avail[DDW_APPLICABLE_SIZE];
 	struct direct_window *window;
+	const char *win_name;
 	struct property *win64 = NULL;
 	struct failed_ddw_pdn *fpdn;
-	bool default_win_removed = false;
+	bool default_win_removed = false, direct_mapping = false;
+	struct pci_dn *pci = PCI_DN(pdn);
+	struct iommu_table *tbl = pci->table_group->tables[0];
 
 	mutex_lock(&direct_window_init_mutex);
 
-	if (find_existing_ddw(pdn, &dev->dev.archdata.dma_offset))
-		goto out_unlock;
+	if (find_existing_ddw(pdn, &dev->dev.archdata.dma_offset, &direct_mapping)) {
+		mutex_unlock(&direct_window_init_mutex);
+		return direct_mapping;
+	}
 
 	/*
 	 * If we already went through this for a previous function of
@@ -1266,15 +1278,25 @@ static bool enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 	}
 
 	/* verify the window * number of ptes will map the partition */
-	/* check largest block * page size > max memory hotplug addr */
 	max_addr = ddw_memory_hotplug_max();
 	if (query.largest_available_block < (max_addr >> page_shift)) {
-		dev_dbg(&dev->dev, "can't map partition max 0x%llx with %llu "
-			  "%llu-sized pages\n", max_addr,  query.largest_available_block,
-			  1ULL << page_shift);
+		dev_dbg(&dev->dev, "can't map partition max 0x%llx with %llu %llu-sized pages\n",
+			max_addr, query.largest_available_block,
+			1ULL << page_shift);
+
+		len = order_base_2(query.largest_available_block << page_shift);
+		win_name = DMA64_PROPNAME;
+	} else {
+		direct_mapping = true;
+		len = order_base_2(max_addr);
+		win_name = DIRECT64_PROPNAME;
+	}
+
+	/* DDW + IOMMU on single window may fail if there is any allocation */
+	if (default_win_removed && !direct_mapping && iommu_table_in_use(tbl)) {
+		dev_dbg(&dev->dev, "current IOMMU table in use, can't be replaced.\n");
 		goto out_failed;
 	}
-	len = order_base_2(max_addr);
 
 	ret = create_ddw(dev, ddw_avail, &create, page_shift, len);
 	if (ret != 0)
@@ -1284,8 +1306,7 @@ static bool enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 		create.liobn, dn);
 
 	win_addr = ((u64)create.addr_hi << 32) | create.addr_lo;
-	win64 = ddw_property_create(DIRECT64_PROPNAME, create.liobn, win_addr,
-				    page_shift, len);
+	win64 = ddw_property_create(win_name, create.liobn, win_addr, page_shift, len);
 	if (!win64) {
 		dev_info(&dev->dev,
 			 "couldn't allocate property, property name, or value\n");
@@ -1300,15 +1321,37 @@ static bool enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 	}
 
 	window = ddw_list_new_entry(pdn, win64->value);
-	if (!window)
+	if (!window) {
+		dev_dbg(&dev->dev, "couldn't create new list entry\n");
 		goto out_prop_del;
+	}
 
-	ret = walk_system_ram_range(0, memblock_end_of_DRAM() >> PAGE_SHIFT,
-			win64->value, tce_setrange_multi_pSeriesLP_walk);
-	if (ret) {
-		dev_info(&dev->dev, "failed to map direct window for %pOF: %d\n",
-			 dn, ret);
-		goto out_list_del;
+	if (direct_mapping) {
+		/* DDW maps the whole partition, so enable direct DMA mapping */
+		ret = walk_system_ram_range(0, memblock_end_of_DRAM() >> PAGE_SHIFT,
+					    win64->value, tce_setrange_multi_pSeriesLP_walk);
+		if (ret) {
+			dev_info(&dev->dev, "failed to map direct window for %pOF: %d\n",
+				 dn, ret);
+			goto out_list_del;
+		}
+	} else {
+		/* New table for using DDW instead of the default DMA window */
+		tbl = iommu_pseries_alloc_table(pci->phb->node);
+		if (!tbl) {
+			dev_dbg(&dev->dev, "couldn't create new IOMMU table\n");
+			goto out_list_del;
+		}
+
+		_iommu_table_setparms(tbl, pci->phb->bus->number, create.liobn, win_addr,
+				      1UL << len, page_shift, 0, &iommu_table_lpar_multi_ops);
+		iommu_init_table(tbl, pci->phb->node, 0, 0);
+
+		/* Free old table and replace by the newer */
+		iommu_tce_table_put(pci->table_group->tables[0]);
+		pci->table_group->tables[0] = tbl;
+
+		set_iommu_table_base(&dev->dev, tbl);
 	}
 
 	spin_lock(&direct_window_list_lock);
@@ -1345,7 +1388,7 @@ out_failed:
 
 out_unlock:
 	mutex_unlock(&direct_window_init_mutex);
-	return win64;
+	return win64 && direct_mapping;
 }
 
 static void pci_dma_dev_setup_pSeriesLP(struct pci_dev *dev)
@@ -1486,7 +1529,10 @@ static int iommu_reconfig_notifier(struct notifier_block *nb, unsigned long acti
 		 * we have to remove the property when releasing
 		 * the device node.
 		 */
-		remove_ddw(np, false, DIRECT64_PROPNAME);
+
+		if (remove_ddw(np, false, DIRECT64_PROPNAME))
+			remove_ddw(np, false, DMA64_PROPNAME);
+
 		if (pci && pci->table_group)
 			iommu_pseries_free_group(pci->table_group,
 					np->full_name);
