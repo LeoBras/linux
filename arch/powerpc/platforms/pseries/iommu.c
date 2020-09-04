@@ -1206,17 +1206,20 @@ static u64 enable_ddw(struct pci_dev *dev, struct device_node *pdn)
 			goto out_failed;
 		}
 	}
-	if (query.page_size & 4) {
-		page_shift = 24; /* 16MB */
-	} else if (query.page_size & 2) {
+
+	/* Choose the biggest pagesize available <= PAGE_SHIFT */
+	if ((query.page_size & 4)) {
+		page_shift = 24; /* 16MB - Hugepages */
+	} else if ((query.page_size & 2) && PAGE_SHIFT >= 16) {
 		page_shift = 16; /* 64kB */
-	} else if (query.page_size & 1) {
+	} else if ((query.page_size & 1) && PAGE_SHIFT >= 12) {
 		page_shift = 12; /* 4kB */
 	} else {
 		dev_dbg(&dev->dev, "no supported direct page size in mask %x",
 			  query.page_size);
 		goto out_failed;
 	}
+
 	/* verify the window * number of ptes will map the partition */
 	/* check largest block * page size > max memory hotplug addr */
 	max_addr = ddw_memory_hotplug_max();
