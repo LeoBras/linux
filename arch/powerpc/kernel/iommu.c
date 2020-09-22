@@ -306,7 +306,7 @@ static dma_addr_t iommu_alloc(struct device *dev, struct iommu_table *tbl,
 	dma_addr_t ret = DMA_MAPPING_ERROR;
 	int build_fail;
 
-	ret = iommu_dmacache_use(tbl, page, npages, direction);
+	ret = iommu_pagecache_use(tbl, page, npages, direction);
 	if (ret != DMA_MAPPING_ERROR)
 		return ret;
 
@@ -340,7 +340,7 @@ static dma_addr_t iommu_alloc(struct device *dev, struct iommu_table *tbl,
 	/* Make sure updates are seen by hardware */
 	mb();
 
-	iommu_dmacache_add(tbl, page, npages, ret, direction);
+	iommu_pagecache_add(tbl, page, npages, ret, direction);
 
 	return ret;
 }
@@ -416,7 +416,7 @@ void __iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr, unsigned int npa
 static void iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr,
 		unsigned int npages)
 {
-	iommu_dmacache_free(tbl, dma_addr, npages);
+	iommu_pagecache_free(tbl, dma_addr, npages);
 
 	/* Make sure TLB cache is flushed if the HW needs it. We do
 	 * not do an mb() here on purpose, it is not needed on any of
@@ -724,7 +724,7 @@ struct iommu_table *iommu_init_table(struct iommu_table *tbl, int nid,
 
 	iommu_table_clear(tbl);
 
-	iommu_cache_init(tbl);
+	iommu_pagecache_init(tbl);
 
 	if (!welcomed) {
 		printk(KERN_INFO "IOMMU table initialized, virtual merging %s\n",
@@ -778,6 +778,8 @@ static void iommu_table_free(struct kref *kref)
 	/* free bitmap */
 	order = get_order(bitmap_sz);
 	free_pages((unsigned long) tbl->it_map, order);
+
+	iommu_pagecache_destroy(tbl);
 
 	/* free table */
 	kfree(tbl);

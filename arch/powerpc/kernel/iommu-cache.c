@@ -3,7 +3,6 @@
 #include <asm/iommu-cache.h>
 
 struct dma_mapping {
-	struct llist_node mapping;
 	struct llist_node fifo;
 	unsigned long dmapage;
 	unsigned long cpupage;
@@ -18,8 +17,11 @@ struct cpupage_entry {
 	struct dma_mapping *data;
 };
 
+#define IOMMU_MAP_LIST_MAX	75	/* percent of the total pages */
+#define IOMMU_MAP_LIST_THRES	128	/* pages */
+
 /**
- * iommu_dmacache_use() - Looks for a DMA mapping in cache
+ * iommu_pagecache_use() - Looks for a DMA mapping in cache
  * @tbl: Device's iommu_table.
  * @page: Address for which a DMA mapping is desired.
  * @npages: Page count needed from that address
@@ -30,8 +32,8 @@ struct cpupage_entry {
  * Return: DMA mapping for range/direction present in cache
  *	   DMA_MAPPING_ERROR if not found.
  */
-dma_addr_t iommu_dmacache_use(struct iommu_table *tbl, void *page, unsigned int npages,
-			      enum dma_data_direction direction)
+dma_addr_t iommu_pagecache_use(struct iommu_table *tbl, void *page, unsigned int npages,
+			       enum dma_data_direction direction)
 {
 	struct cpupage_entry *e;
 	struct dma_mapping *d;
@@ -56,11 +58,11 @@ dma_addr_t iommu_dmacache_use(struct iommu_table *tbl, void *page, unsigned int 
 }
 
 /**
- * iommu_dmacache_entry_remove() - Remove a dma mapping from cpupage & dmapage XArrays
+ * iommu_pagecache_entry_remove() - Remove a dma mapping from cpupage & dmapage XArrays
  * @cache: Device's dmacache.
  * @d: dma_mapping to be removed
  */
-static void iommu_dmacache_entry_remove(struct dmacache *cache, struct dma_mapping *d)
+static void iommu_pagecache_entry_remove(struct dmacache *cache, struct dma_mapping *d)
 {
 	struct cpupage_entry *e, *tmp;
 	dma_addr_t dp = d->dmapage;
@@ -73,17 +75,18 @@ static void iommu_dmacache_entry_remove(struct dmacache *cache, struct dma_mappi
 			tmp = llist_entry(e->node.next, struct cpupage_entry, node);
 			xa_store(&cache->cpupages, cp, tmp, GFP_KERNEL);
 		}
-		xa_erase(&cache->dmapages, dp);
+
 		kfree(e);
+		xa_erase(&cache->dmapages, dp);
 	}
 }
 
 /**
- * iommu_dmacache_clean() - Clean count mappings from dmacache fifo
+ * iommu_pagecache_clean() - Clean count mappings from dmacache fifo
  * @tbl: Device's iommu_table.
  * @count: number of entries to be removed.
  */
-static void iommu_dmacache_clean(struct iommu_table *tbl, const long count)
+static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 {
 	struct dma_mapping *d, *tmp;
 	struct llist_node *n;
@@ -91,7 +94,6 @@ static void iommu_dmacache_clean(struct iommu_table *tbl, const long count)
 	unsigned long removed = 0;
 
 	n = llist_del_all(&cache->fifo_del);
-
 	if (!n)
 		return;
 
@@ -99,21 +101,21 @@ static void iommu_dmacache_clean(struct iommu_table *tbl, const long count)
 		switch (refcount_read(&d->count)) {
 		case 0:
 			/* Fully remove entry */
-			iommu_dmacache_entry_remove(cache, d);
+			iommu_pagecache_entry_remove(cache, d);
 			__iommu_free(tbl, d->dmapage << tbl->it_page_shift, d->size);
+			removed += d->size;
 			kfree(d);
-			removed++;
 			break;
 		case 1:
 			/* Remove entry but don't undo mapping */
-			iommu_dmacache_entry_remove(cache, d);
+			iommu_pagecache_entry_remove(cache, d);
+			removed += d->size;
 			kfree(d);
-			removed++;
 			break;
 		default:
 			/* In use. Re-add it to list. */
-			n = xchg(&tbl->cache.fifo_add.first, &d->fifo);
-			if (!n)
+			n = xchg(&cache->fifo_add.first, &d->fifo);
+			if (n)
 				n->next = &d->fifo;
 
 			break;
@@ -123,13 +125,13 @@ static void iommu_dmacache_clean(struct iommu_table *tbl, const long count)
 			break;
 	}
 
-	atomic64_sub(removed, &tbl->cache.cachesize);
+	atomic64_sub(removed, &cache->cachesize);
 
-	xchg(&tbl->cache.fifo_del.first, &tmp->fifo);
+	xchg(&cache->fifo_del.first, &tmp->fifo);
 }
 
 /**
- * iommu_dmacache_free() - Decrement a mapping usage from dmacache and clean when full
+ * iommu_pagecache_free() - Decrement a mapping usage from dmacache and clean when full
  * @tbl: Device's iommu_table.
  * @dma_handle: DMA address from the mapping.
  * @npages: Page count from that address
@@ -137,7 +139,7 @@ static void iommu_dmacache_clean(struct iommu_table *tbl, const long count)
  * Decrements a refcount for a mapping in this dma_handle + npages, and remove
  * some unused dma mappings from dmacache fifo.
  */
-void iommu_dmacache_free(struct iommu_table *tbl, dma_addr_t dma_handle,	unsigned int npages)
+void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsigned int npages)
 {
 	struct dma_mapping *d;
 	long exceeding;
@@ -151,14 +153,14 @@ void iommu_dmacache_free(struct iommu_table *tbl, dma_addr_t dma_handle,	unsigne
 
 	refcount_dec(&d->count);
 
-	exceeding = atomic64_read(&tbl->cache.cachesize) - IOMMU_MAP_LIST_MAX;
+	exceeding = atomic64_read(&tbl->cache.cachesize) - tbl->cache.max_cachesize;
 
 	if (exceeding > 0)
-		iommu_dmacache_clean(tbl, exceeding + IOMMU_MAP_LIST_THRES);
+		iommu_pagecache_clean(tbl, exceeding + IOMMU_MAP_LIST_THRES);
 }
 
 /**
- * iommu_dmacache_add() - Create and add a new dma mapping into cache.
+ * iommu_pagecache_add() - Create and add a new dma mapping into cache.
  * @tbl: Device's iommu_table.
  * @page: Address for which a DMA mapping was created.
  * @npages: Page count mapped from that address
@@ -171,8 +173,8 @@ void iommu_dmacache_free(struct iommu_table *tbl, dma_addr_t dma_handle,	unsigne
  * that starts at the last mapped entry.
  *
  */
-void iommu_dmacache_add(struct iommu_table *tbl, void *page, unsigned int npages, dma_addr_t addr,
-			enum dma_data_direction direction)
+void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npages, dma_addr_t addr,
+			 enum dma_data_direction direction)
 {
 	struct dma_mapping *d, *tmp;
 	struct cpupage_entry *e, *old;
@@ -216,13 +218,21 @@ void iommu_dmacache_add(struct iommu_table *tbl, void *page, unsigned int npages
 	}
 
 	n = xchg(&tbl->cache.fifo_add.first, &d->fifo);
-	if (!n)
+	if (n)
 		n->next = &d->fifo;
 
-	atomic64_inc(&tbl->cache.cachesize);
+	atomic64_add(npages, &tbl->cache.cachesize);
 }
 
-void iommu_cache_init(struct iommu_table *tbl)
+void iommu_pagecache_destroy(struct iommu_table *tbl)
+{
+	iommu_pagecache_clean(tbl, atomic64_read(&tbl->cache.cachesize));
+
+	xa_destroy(&tbl->cache.cpupages);
+	xa_destroy(&tbl->cache.dmapages);
+}
+
+void iommu_pagecache_init(struct iommu_table *tbl)
 {
 	struct dma_mapping *d;
 
@@ -234,14 +244,18 @@ void iommu_cache_init(struct iommu_table *tbl)
 	if (!d)
 		panic("%s: Can't allocate %ld bytes\n", __func__, sizeof(*d));
 
-	d->cpupage = -1UL;
-	d->dmapage = -1UL;
-	refcount_set(&d->count, 1);
 	llist_add(&d->fifo, &tbl->cache.fifo_add);
 	llist_add(&d->fifo, &tbl->cache.fifo_del);
+
+	d->cpupage = -1UL;
+	d->dmapage = -1UL;
+	d->direction = DMA_NONE;
+	d->size = 0;
+	refcount_set(&d->count, 0);
 
 	xa_init(&tbl->cache.cpupages);
 	xa_init(&tbl->cache.dmapages);
 
 	atomic64_set(&tbl->cache.cachesize, 0);
+	tbl->cache.max_cachesize = (IOMMU_MAP_LIST_MAX * tbl->it_size) / 100;
 }
