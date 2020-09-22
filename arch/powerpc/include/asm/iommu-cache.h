@@ -13,19 +13,18 @@ struct dmacache {
 	struct xarray cpupages;
 	struct xarray dmapages;
 	atomic64_t cachesize;
+	unsigned long max_cachesize;
 };
 
 #include <asm/iommu.h>
 
-void iommu_cache_init(struct iommu_table *tbl);
-void iommu_dmacache_add(struct iommu_table *tbl, void *page, unsigned int npages, dma_addr_t addr,
-			enum dma_data_direction direction);
-dma_addr_t iommu_dmacache_use(struct iommu_table *tbl, void *page, unsigned int npages,
-			      enum dma_data_direction direction);
-void iommu_dmacache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsigned int npages);
-
-#define IOMMU_MAP_LIST_MAX	8192
-#define IOMMU_MAP_LIST_THRES	128
+void iommu_pagecache_init(struct iommu_table *tbl);
+void iommu_pagecache_destroy(struct iommu_table *tbl);
+void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npages, dma_addr_t addr,
+			 enum dma_data_direction direction);
+dma_addr_t iommu_pagecache_use(struct iommu_table *tbl, void *page, unsigned int npages,
+			       enum dma_data_direction direction);
+void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsigned int npages);
 
 #endif /* __KERNEL__ */
 #endif /* _IOMMU_CACHE_H */
