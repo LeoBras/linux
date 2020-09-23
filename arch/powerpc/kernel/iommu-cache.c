@@ -7,7 +7,7 @@ struct dma_mapping {
 	unsigned long dmapage;
 	unsigned long cpupage;
 	unsigned long size;
-	refcount_t count;
+	atomic_t count;
 	enum dma_data_direction direction;
 
 };
@@ -50,7 +50,7 @@ dma_addr_t iommu_pagecache_use(struct iommu_table *tbl, void *page, unsigned int
 		    !DMA_DIR_COMPAT(d->direction, direction))
 			continue;
 
-		refcount_inc(&d->count);
+		atomic_inc(&d->count);
 		return (d->dmapage + start - d->cpupage) << tbl->it_page_shift;
 	}
 
@@ -98,7 +98,7 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 		return;
 
 	llist_for_each_entry_safe(d, tmp, n, fifo) {
-		switch (refcount_read(&d->count)) {
+		switch (atomic_read(&d->count)) {
 		case 0:
 			/* Fully remove entry */
 			iommu_pagecache_entry_remove(cache, d);
@@ -136,7 +136,7 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
  * @dma_handle: DMA address from the mapping.
  * @npages: Page count from that address
  *
- * Decrements a refcount for a mapping in this dma_handle + npages, and remove
+ * Decrements a refcount (atomic) for a mapping in this dma_handle + npages, and remove
  * some unused dma mappings from dmacache fifo.
  */
 void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsigned int npages)
@@ -151,7 +151,7 @@ void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsign
 		return;
 	}
 
-	refcount_dec(&d->count);
+	atomic_dec(&d->count);
 
 	exceeding = atomic64_read(&tbl->cache.cachesize) - tbl->cache.max_cachesize;
 
@@ -191,7 +191,7 @@ void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npage
 	d->size = npages;
 	d->direction = direction;
 	d->fifo.next = NULL;
-	refcount_set(&d->count, 1);
+	atomic_set(&d->count, 1);
 
 	p = d->cpupage;
 	addr = d->dmapage;
@@ -251,7 +251,7 @@ void iommu_pagecache_init(struct iommu_table *tbl)
 	d->dmapage = -1UL;
 	d->direction = DMA_NONE;
 	d->size = 0;
-	refcount_set(&d->count, 0);
+	atomic_set(&d->count, 0);
 
 	xa_init(&tbl->cache.cpupages);
 	xa_init(&tbl->cache.dmapages);
