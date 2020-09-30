@@ -73,7 +73,7 @@ static void iommu_pagecache_entry_remove(struct dmacache *cache, struct dma_mapp
 		e = xa_erase(&cache->cpupages, cp);
 		if (e && e->node.next) {
 			tmp = llist_entry(e->node.next, struct cpupage_entry, node);
-			xa_store(&cache->cpupages, cp, tmp, GFP_KERNEL);
+			xa_store(&cache->cpupages, cp, tmp, GFP_ATOMIC);
 		}
 
 		kfree(e);
@@ -182,7 +182,7 @@ void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npage
 	unsigned long p = (unsigned long)page;
 	unsigned int i;
 
-	d = kmalloc(sizeof(*d), GFP_KERNEL);
+	d = kmalloc(sizeof(*d), GFP_ATOMIC);
 	if (!d)
 		return;
 
@@ -198,17 +198,17 @@ void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npage
 
 	for (i = 0; i < npages ; i++) {
 		/* Only one mapping may exist for a DMA address*/
-		tmp = xa_store(&tbl->cache.dmapages, addr++, d, GFP_KERNEL);
+		tmp = xa_store(&tbl->cache.dmapages, addr++, d, GFP_ATOMIC);
 		if (xa_is_err(tmp))
 			break;
 
 		/* Multiple mappings may exist for a page, get them in a list*/
-		e = kmalloc(sizeof(*e), GFP_KERNEL);
+		e = kmalloc(sizeof(*e), GFP_ATOMIC);
 		if (!d)
 			break;
 
 		e->data = d;
-		old = xa_store(&tbl->cache.cpupages, p++, e, GFP_KERNEL);
+		old = xa_store(&tbl->cache.cpupages, p++, e, GFP_ATOMIC);
 		e->node.next = &old->node;
 
 		if (xa_is_err(old)) {
