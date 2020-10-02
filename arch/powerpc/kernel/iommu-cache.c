@@ -109,7 +109,7 @@ static inline void iommu_pagecache_entry_remove(struct iommu_pagecache *cache,
 
 	for (; start < end; start++, cpupage++) {
 		first = xa_erase(&cache->cpupages, cpupage);
-		if (!first) {
+		if (!first || xa_is_err(first)) {
 			pr_err("%s: Entry for page %lx not found.\n", __func__, cpupage);
 			goto next;
 		}
@@ -122,8 +122,10 @@ static inline void iommu_pagecache_entry_remove(struct iommu_pagecache *cache,
 			tmp = e;
 		}
 
-		if (tmp) {
-			/* Entry to be removed is not the first entry */
+		if (e->data != d)
+			goto next;
+
+		if (e != first) {
 			tmp->node.next = e->node.next;
 			tmp = first;
 		} else if (e->node.next) {
