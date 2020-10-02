@@ -103,19 +103,18 @@ static inline void iommu_pagecache_entry_remove(struct iommu_pagecache *cache,
 						struct dma_mapping *d)
 {
 	struct cpupage_entry *e, *first, *tmp;
-	dma_addr_t start = d->dmapage;
-	dma_addr_t end = start + d->size;
 	unsigned long cpupage = d->cpupage;
+	unsigned long cpupage_end = cpupage + d->size;
 
-	for (; start < end; start++, cpupage++) {
+	for (; cpupage < cpupage_end; cpupage++) {
 		first = xa_erase(&cache->cpupages, cpupage);
 		if (!first || xa_is_err(first)) {
 			pr_err("%s: Entry for page %lx not found.\n", __func__, cpupage);
-			goto next;
+			continue;
 		}
 
 		/* Find the entry that contains the dma_mapping */
-		tmp = NULL;
+		tmp = NULL; //TODO change this behavior
 		llist_for_each_entry(e, &first->node, node) {
 			if (e->data == d)
 				break;
@@ -123,7 +122,7 @@ static inline void iommu_pagecache_entry_remove(struct iommu_pagecache *cache,
 		}
 
 		if (e->data != d)
-			goto next;
+			continue;
 
 		if (e != first) {
 			tmp->node.next = e->node.next;
@@ -136,9 +135,9 @@ static inline void iommu_pagecache_entry_remove(struct iommu_pagecache *cache,
 
 		if (tmp)
 			iommu_pagecache_cpupage_update(cache, tmp, cpupage);
-next:
-		xa_erase(&cache->dmapages, start);
 	}
+
+	xa_erase(&cache->dmapages, d->dmapage);
 }
 
 /**
@@ -228,20 +227,14 @@ void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsign
  *	   false otherwisee
  */
 static inline bool iommu_pagecache_entry_add(struct iommu_pagecache *cache, struct dma_mapping *d,
-					     unsigned long cpupage, dma_addr_t addr)
+					     unsigned long cpupage)
 {
-	struct dma_mapping *tmp;
 	struct cpupage_entry *e, *old;
-
-	/* Only one mapping may exist for a DMA address*/
-	tmp = xa_store(&cache->dmapages, addr, d, GFP_ATOMIC);
-	if (xa_is_err(tmp))
-		return false;
 
 	/* Multiple mappings may exist for a page, get them in a list*/
 	e = kmalloc(sizeof(*e), GFP_ATOMIC);
 	if (!e)
-		goto out;
+		return false;
 
 	e->data = d;
 	e->node.next = NULL;
@@ -255,8 +248,6 @@ static inline bool iommu_pagecache_entry_add(struct iommu_pagecache *cache, stru
 	}
 
 	kfree(e);
-out:
-	xa_erase(&cache->dmapages, addr);
 	return false;
 }
 
@@ -274,7 +265,7 @@ out:
 void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npages, dma_addr_t addr,
 			 enum dma_data_direction direction)
 {
-	struct dma_mapping *d;
+	struct dma_mapping *d, *tmp;
 	struct llist_node *n;
 	unsigned long cpupage, dmapage;
 	unsigned int i;
@@ -296,9 +287,18 @@ void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npage
 	d->size = npages;
 	atomic_set(&d->count, 1);
 
+	/* Only one mapping may exist for a DMA address*/
+	if (npages - 1)
+		tmp = xa_store_range(&tbl->cache.dmapages, dmapage, dmapage + npages - 1, d,
+				     GFP_ATOMIC);
+	else
+		tmp = xa_store(&tbl->cache.dmapages, dmapage, d, GFP_ATOMIC);
+
+	if (xa_is_err(tmp))
+		goto out_free;
 
 	for (i = 0; i < npages ; i++) {
-		if (!iommu_pagecache_entry_add(&tbl->cache, d, cpupage++, addr++))
+		if (!iommu_pagecache_entry_add(&tbl->cache, d, cpupage + i))
 			break;
 	}
 
