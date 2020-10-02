@@ -274,40 +274,44 @@ void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npage
 {
 	struct dma_mapping *d;
 	struct llist_node *n;
-	unsigned long cpupage = (unsigned long)page;
+	unsigned long cpupage, dmapage;
 	unsigned int i;
+
+	/* Increment cachesize even if adding fails: avoid too many fails causing starvation */
+	atomic64_add(npages, &tbl->cache.cachesize);
 
 	d = kmalloc(sizeof(*d), GFP_ATOMIC);
 	if (!d)
 		return;
 
-	d->cpupage = (unsigned long)cpupage >> tbl->it_page_shift;
-	d->dmapage = (unsigned long)addr >> tbl->it_page_shift;
+	cpupage = (unsigned long)page >> tbl->it_page_shift;
+	dmapage = (unsigned long)addr >> tbl->it_page_shift;
+
+	d->cpupage = cpupage;
+	d->dmapage = dmapage;
 	d->direction = direction;
 	d->fifo.next = NULL;
+	d->size = npages;
 	atomic_set(&d->count, 1);
 
-	cpupage = d->cpupage;
-	addr = d->dmapage;
 
 	for (i = 0; i < npages ; i++) {
 		if (!iommu_pagecache_entry_add(&tbl->cache, d, cpupage++, addr++))
 			break;
 	}
 
-	if (i == 0) {
-		/* Failed on adding the first page */
-		kfree(d);
-		return;
-	}
-
-	d->size = i;
+	/* Failed adding the first page */
+	if (i == 0)
+		goto out_free;
 
 	n = xchg(&tbl->cache.fifo_add.first, &d->fifo);
 	if (n)
 		n->next = &d->fifo;
 
-	atomic64_add(i, &tbl->cache.cachesize);
+	return;
+
+out_free:
+	kfree(d);
 }
 
 /**
