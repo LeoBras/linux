@@ -7,7 +7,7 @@
 #include <linux/xarray.h>
 #include <linux/atomic.h>
 
-struct dmacache {
+struct iommu_pagecache {
 	struct llist_head fifo_add;
 	struct llist_head fifo_del;
 	struct xarray cpupages;
