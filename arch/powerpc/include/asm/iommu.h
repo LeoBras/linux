@@ -115,7 +115,7 @@ struct iommu_table {
 	int it_nid;
 	unsigned long it_reserved_start; /* Start of not-DMA-able (MMIO) area */
 	unsigned long it_reserved_end;
-	struct dmacache cache;
+	struct iommu_pagecache cache;
 };
 
 #define IOMMU_TABLE_USERSPACE_ENTRY_RO(tbl, entry) \
