@@ -52,7 +52,7 @@ dma_addr_t iommu_pagecache_use(struct iommu_table *tbl, void *page, unsigned int
 		    !DMA_DIR_COMPAT(d->direction, direction))
 			continue;
 
-		r = atomic_fetch_add_unless(&d->count, 1, -IOMMU_CACHE_REMOVING);
+		r = atomic_fetch_add_unless(&d->count, npages, -IOMMU_CACHE_REMOVING);
 		if (r == -IOMMU_CACHE_REMOVING)
 			continue;
 
@@ -105,6 +105,9 @@ static inline void iommu_pagecache_entry_remove(struct iommu_pagecache *cache,
 	struct cpupage_entry *e, *first, *tmp;
 	unsigned long cpupage = d->cpupage;
 	unsigned long cpupage_end = cpupage + d->size;
+	unsigned long dmapage = d->dmapage;
+	unsigned long dmapage_end = dmapage + d->size;
+
 
 	for (; cpupage < cpupage_end; cpupage++) {
 		first = xa_erase(&cache->cpupages, cpupage);
@@ -137,7 +140,8 @@ static inline void iommu_pagecache_entry_remove(struct iommu_pagecache *cache,
 			iommu_pagecache_cpupage_update(cache, tmp, cpupage);
 	}
 
-	xa_erase(&cache->dmapages, d->dmapage);
+	for (; dmapage < dmapage_end; dmapage++)
+		xa_erase(&cache->dmapages, dmapage);
 }
 
 /**
@@ -205,7 +209,7 @@ void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsign
 		return;
 	}
 
-	atomic_dec(&d->count);
+	atomic_sub(npages, &d->count);
 
 	exceeding = atomic64_read(&tbl->cache.cachesize) - tbl->cache.max_cachesize;
 
@@ -285,17 +289,13 @@ void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npage
 	d->direction = direction;
 	d->fifo.next = NULL;
 	d->size = npages;
-	atomic_set(&d->count, 1);
+	atomic_set(&d->count, npages);
 
-	/* Only one mapping may exist for a DMA address*/
-	if (npages - 1)
-		tmp = xa_store_range(&tbl->cache.dmapages, dmapage, dmapage + npages - 1, d,
-				     GFP_ATOMIC);
-	else
-		tmp = xa_store(&tbl->cache.dmapages, dmapage, d, GFP_ATOMIC);
-
-	if (xa_is_err(tmp))
-		goto out_free;
+	for (i = 0; i < npages ; i++) {
+		tmp = xa_store(&tbl->cache.dmapages, dmapage + i, d, GFP_ATOMIC);
+		if (xa_is_err(tmp))
+			goto out_free;
+	}
 
 	for (i = 0; i < npages ; i++) {
 		if (!iommu_pagecache_entry_add(&tbl->cache, d, cpupage + i))
