@@ -2,24 +2,70 @@
 
 #include <asm/iommu-cache.h>
 
-struct dma_mapping {
+struct iommu_pagecache_entry {
 	struct llist_node fifo;
+	struct llist_node next_map;	/* Next mapping for this cpu page */
 	unsigned long dmapage;
 	unsigned long cpupage;
-	unsigned long size;
-	atomic_t count;
+	atomic_t count;		/* Usage count */
 	enum dma_data_direction direction;
 
 };
 
-struct cpupage_entry {
-	struct llist_node node;
-	struct dma_mapping *data;
+struct iommu_pagecache_unmap_entry {
+	struct list_head list;
+	unsigned long dmabase;
+	unsigned long size;
 };
 
 #define IOMMU_CACHE_MAX		75	/* percent of the total pages */
 #define IOMMU_CACHE_THRES	128	/* pages */
 #define IOMMU_CACHE_REMOVING	0x0deadbee
+
+static inline bool iommu_pagecache_use_one(struct iommu_pagecache_entry *d)
+{
+	int r = atomic_fetch_add_unless(&d->count, 1, -IOMMU_CACHE_REMOVING);
+
+	return (r != -IOMMU_CACHE_REMOVING);
+}
+
+static inline bool iommu_pagecache_use_range(struct iommu_pagecache *cache,
+					     struct iommu_pagecache_entry *d, unsigned int npages,
+					     enum dma_data_direction direction)
+{
+	int i;
+	struct iommu_pagecache_entry *tmp;
+	const unsigned long dmapage = d->dmapage;
+	const unsigned long cpupage = d->cpupage;
+
+	/* Reserve first page*/
+	if (!iommu_pagecache_use_one(d))
+		return false;
+
+	/* Start from the last entry, to fail fast if the whole range is not available */
+	for (i = npages - 1; i > 0; i--) {
+		tmp = xa_load(&cache->dmapages, dmapage + i);
+		if (!tmp || tmp->cpupage != (cpupage + i))
+			goto out_reverse;
+
+		if (!DMA_DIR_COMPAT(tmp->direction, direction))
+			goto out_reverse;
+
+		if (!iommu_pagecache_use_one(d))
+			goto out_reverse;
+	}
+
+	return true;
+
+out_reverse:
+	for (i++; i < npages; i++) {
+		tmp = xa_load(&cache->dmapages, dmapage + i);
+		if (tmp)
+			atomic_dec(&tmp->count);
+	}
+
+	return false;
+}
 
 /**
  * iommu_pagecache_use() - Looks for a DMA mapping in cache
@@ -36,27 +82,19 @@ struct cpupage_entry {
 dma_addr_t iommu_pagecache_use(struct iommu_table *tbl, void *page, unsigned int npages,
 			       enum dma_data_direction direction)
 {
-	struct cpupage_entry *e;
-	struct dma_mapping *d;
-	const unsigned long start = (unsigned long)page >> tbl->it_page_shift;
-	const unsigned long end = start + npages;
-	int r;
+	struct iommu_pagecache_entry *d;
+	const unsigned long p = (unsigned long)page >> tbl->it_page_shift;
 
-	e = xa_load(&tbl->cache.cpupages, start);
-	if (!e)
+	d = xa_load(&tbl->cache.cpupages, p);
+	if (!d)
 		return DMA_MAPPING_ERROR;
 
-	llist_for_each_entry(e, &e->node, node) {
-		d = e->data;
-		if (start < d->cpupage || end > (d->cpupage + d->size) ||
-		    !DMA_DIR_COMPAT(d->direction, direction))
+	llist_for_each_entry(d, &d->next_map, next_map) {
+		if (p != d->cpupage || !DMA_DIR_COMPAT(d->direction, direction))
 			continue;
 
-		r = atomic_fetch_add_unless(&d->count, npages, -IOMMU_CACHE_REMOVING);
-		if (r == -IOMMU_CACHE_REMOVING)
-			continue;
-
-		return (d->dmapage + start - d->cpupage) << tbl->it_page_shift;
+		if (iommu_pagecache_use_range(&tbl->cache, d, npages, direction))
+			return d->dmapage << tbl->it_page_shift;
 	}
 
 	return DMA_MAPPING_ERROR;
@@ -69,10 +107,11 @@ dma_addr_t iommu_pagecache_use(struct iommu_table *tbl, void *page, unsigned int
  * @cpupage: CPU page number (index for cpupages).
  */
 static inline void iommu_pagecache_cpupage_update(struct iommu_pagecache *cache,
-						  struct cpupage_entry *e, unsigned long cpupage)
+						  struct iommu_pagecache_entry *e,
+						  unsigned long cpupage)
 {
 	struct llist_node *n;
-	struct cpupage_entry *first;
+	struct iommu_pagecache_entry *first;
 
 	for (;;) {
 		while (xa_is_err(e = xa_store(&cache->cpupages, cpupage, e, GFP_ATOMIC)))
@@ -80,17 +119,17 @@ static inline void iommu_pagecache_cpupage_update(struct iommu_pagecache *cache,
 			       __func__, e);
 
 		if (likely(!e))
-			break;
+			return;
 
 		/* Something got stored between xa_erase and xa_store (unlikely) */
 
 		first = xa_erase(&cache->cpupages, cpupage);
 
 		/* Find last valid node */
-		for (n = &e->node; n->next; n = n->next)
+		for (n = &e->next_map; n->next; n = n->next)
 			;
 
-		xchg(&n->next, &first->node);
+		xchg(&n->next, &first->next_map);
 	}
 }
 
@@ -100,48 +139,85 @@ static inline void iommu_pagecache_cpupage_update(struct iommu_pagecache *cache,
  * @d: dma_mapping to be removed
  */
 static inline void iommu_pagecache_entry_remove(struct iommu_pagecache *cache,
-						struct dma_mapping *d)
+						struct iommu_pagecache_entry *d)
 {
-	struct cpupage_entry *e, *first, *tmp;
-	unsigned long cpupage = d->cpupage;
-	unsigned long cpupage_end = cpupage + d->size;
-	unsigned long dmapage = d->dmapage;
-	unsigned long dmapage_end = dmapage + d->size;
+	struct iommu_pagecache_entry *e, *first, *tmp;
 
-
-	for (; cpupage < cpupage_end; cpupage++) {
-		first = xa_erase(&cache->cpupages, cpupage);
-		if (!first || xa_is_err(first)) {
-			pr_err("%s: Entry for page %lx not found.\n", __func__, cpupage);
-			continue;
-		}
-
-		/* Find the entry that contains the dma_mapping */
-		tmp = NULL; //TODO change this behavior
-		llist_for_each_entry(e, &first->node, node) {
-			if (e->data == d)
-				break;
-			tmp = e;
-		}
-
-		if (e->data != d)
-			continue;
-
-		if (e != first) {
-			tmp->node.next = e->node.next;
-			tmp = first;
-		} else if (e->node.next) {
-			tmp = llist_entry(e->node.next, struct cpupage_entry, node);
-		}
-
-		kfree(e);
-
-		if (tmp)
-			iommu_pagecache_cpupage_update(cache, tmp, cpupage);
+	first = xa_erase(&cache->cpupages, d->cpupage);
+	if (!first || xa_is_err(first)) {
+		pr_err("%s: Entry for page %lx not found.\n", __func__, d->cpupage);
+		goto free_dma;
 	}
 
-	for (; dmapage < dmapage_end; dmapage++)
-		xa_erase(&cache->dmapages, dmapage);
+	if (d == first) {
+		if (!d->next_map.next)
+			goto free_dma;
+
+		first = llist_entry(d->next_map.next, struct iommu_pagecache_entry, next_map);
+		goto upd_cpu;
+	}
+
+	/* Find the previous entry in this cpupage */
+//	tmp = NULL; //TODO change this behavior
+	llist_for_each_entry(e, &first->next_map, next_map) {
+		if (e == d) {
+			tmp->next_map.next = e->next_map.next;
+			goto upd_cpu;
+		}
+		tmp = e;
+	}
+
+	goto free_dma;
+
+upd_cpu:
+	iommu_pagecache_cpupage_update(cache, first, d->cpupage);
+
+free_dma:
+	xa_erase(&cache->dmapages, d->dmapage);
+}
+
+static inline bool iommu_pagecache_unmap_add(struct list_head **l, unsigned long dmapage)
+{
+	struct iommu_pagecache_unmap_entry *u;
+
+	if (!*l)
+		goto new_entry;
+
+	list_for_each_entry(u, *l, list) {
+		if (dmapage == u->dmabase + u->size) {
+			u->size++;
+			return true;
+		}
+	}
+
+new_entry:
+	u = kmalloc(sizeof(*u), GFP_ATOMIC);
+	if (!u)
+		return false;
+
+	u->dmabase = dmapage;
+	u->size = 1;
+
+	if (*l)
+		list_add(&u->list, *l);
+	else
+		INIT_LIST_HEAD(*l = &u->list);
+
+	return true;
+}
+
+static inline void iommu_pagecache_unmap(struct iommu_table *tbl, struct list_head *l)
+{
+	struct iommu_pagecache_unmap_entry *u, *tmp;
+	unsigned long freed = 0;
+
+	list_for_each_entry_safe(u, tmp, l, list) {
+		__iommu_free(tbl, u->dmabase << tbl->it_page_shift, u->size);
+		freed += u->size;
+		kfree(u);
+	}
+
+	atomic64_sub(freed, &tbl->cache.cachesize);
 }
 
 /**
@@ -151,10 +227,11 @@ static inline void iommu_pagecache_entry_remove(struct iommu_pagecache *cache,
  */
 static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 {
-	struct dma_mapping *d, *tmp;
+	struct iommu_pagecache_entry *d, *tmp;
 	struct llist_node *n;
 	struct iommu_pagecache *cache = &tbl->cache;
 	unsigned long removed = 0;
+	struct list_head *l = NULL;
 	int r;
 
 	n = llist_del_all(&cache->fifo_del);
@@ -163,13 +240,7 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 
 	llist_for_each_entry_safe(d, tmp, n, fifo) {
 		r = atomic_sub_return_relaxed(IOMMU_CACHE_REMOVING, &d->count);
-		if (r == -IOMMU_CACHE_REMOVING) {
-			/* If count was 0, fully remove entry */
-			iommu_pagecache_entry_remove(cache, d);
-			__iommu_free(tbl, d->dmapage << tbl->it_page_shift, d->size);
-			removed += d->size;
-			kfree(d);
-		} else {
+		if (r != -IOMMU_CACHE_REMOVING) {
 			/* In use. Re-add it to list. */
 			n = xchg(&cache->fifo_add.first, &d->fifo);
 			if (n)
@@ -178,13 +249,21 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 			atomic_add(IOMMU_CACHE_REMOVING, &d->count);
 		}
 
-		if (removed >= count)
+		/* Count was 0, fully remove entry */
+		iommu_pagecache_entry_remove(cache, d);
+		iommu_pagecache_unmap_add(&l, d->dmapage);
+		kfree(d);
+
+		if (++removed >= count)
 			break;
 	}
 
-	atomic64_sub(removed, &cache->cachesize);
+	/* No entry removed */
+	if (!l)
+		return;
 
 	xchg(&cache->fifo_del.first, &tmp->fifo);
+	iommu_pagecache_unmap(tbl, l);
 }
 
 /**
@@ -198,61 +277,27 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
  */
 void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsigned int npages)
 {
-	struct dma_mapping *d;
+	struct iommu_pagecache_entry *d;
 	long exceeding;
 	unsigned long dmapage = dma_handle >> tbl->it_page_shift;
+	unsigned long dmapage_end = dmapage + npages;
+	struct list_head *l = NULL;
 
-	d = xa_load(&tbl->cache.dmapages, dmapage);
-	if (!d) {
-		/* Not in list, just free */
-		__iommu_free(tbl, dma_handle, npages);
-		return;
+	for (; dmapage < dmapage_end; dmapage++) {
+		d = xa_load(&tbl->cache.dmapages, dmapage);
+		if (d) {
+			atomic_dec(&d->count);
+			continue;
+		}
+		iommu_pagecache_unmap_add(&l, dmapage);
 	}
 
-	atomic_sub(npages, &d->count);
+	if (l)
+		iommu_pagecache_unmap(tbl, l);
 
 	exceeding = atomic64_read(&tbl->cache.cachesize) - tbl->cache.max_cachesize;
-
 	if (exceeding > 0)
 		iommu_pagecache_clean(tbl, exceeding + IOMMU_CACHE_THRES);
-}
-
-/**
- * iommu_pagecache_entry_add() - Add a new dma_mapping into cache.
- * @cache: Device's iommu_pagecache.
- * @d: dma_mapping to be added
- * @cpupage: CPU page number (index for cpupages).
- *
- * Add dma_mapping to cpupages XArray.
- * An entry will be created for each page in the mapping. As there may exist many mappings for a
- * single cpupage, each entry has a llist that starts at the last mapped entry.
- *
- * Return: true if the mapping was correctly added to cpupages
- *	   false otherwisee
- */
-static inline bool iommu_pagecache_entry_add(struct iommu_pagecache *cache, struct dma_mapping *d,
-					     unsigned long cpupage)
-{
-	struct cpupage_entry *e, *old;
-
-	/* Multiple mappings may exist for a page, get them in a list*/
-	e = kmalloc(sizeof(*e), GFP_ATOMIC);
-	if (!e)
-		return false;
-
-	e->data = d;
-	e->node.next = NULL;
-
-	old = xa_store(&cache->cpupages, cpupage, e, GFP_ATOMIC);
-	if (!xa_is_err(old)) {
-		if (old)
-			xchg(&e->node.next, &old->node);
-
-		return true;
-	}
-
-	kfree(e);
-	return false;
 }
 
 /**
@@ -269,7 +314,7 @@ static inline bool iommu_pagecache_entry_add(struct iommu_pagecache *cache, stru
 void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npages, dma_addr_t addr,
 			 enum dma_data_direction direction)
 {
-	struct dma_mapping *d, *tmp;
+	struct iommu_pagecache_entry *d, *tmp;
 	struct llist_node *n;
 	unsigned long cpupage, dmapage;
 	unsigned int i;
@@ -277,43 +322,41 @@ void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npage
 	/* Increment cachesize even if adding fails: avoid too many fails causing starvation */
 	atomic64_add(npages, &tbl->cache.cachesize);
 
-	d = kmalloc(sizeof(*d), GFP_ATOMIC);
-	if (!d)
-		return;
-
 	cpupage = (unsigned long)page >> tbl->it_page_shift;
 	dmapage = (unsigned long)addr >> tbl->it_page_shift;
 
-	d->cpupage = cpupage;
-	d->dmapage = dmapage;
-	d->direction = direction;
-	d->fifo.next = NULL;
-	d->size = npages;
-	atomic_set(&d->count, npages);
-
 	for (i = 0; i < npages ; i++) {
+		d = kmalloc(sizeof(*d), GFP_ATOMIC);
+		if (!d)
+			return;
+
+		d->cpupage = cpupage + i;
+		d->dmapage = dmapage + i;
+		d->direction = direction;
+		d->fifo.next = NULL;
+		d->next_map.next = NULL;
+		atomic_set(&d->count, 1);
+
 		tmp = xa_store(&tbl->cache.dmapages, dmapage + i, d, GFP_ATOMIC);
-		if (xa_is_err(tmp))
-			goto out_free;
-	}
-
-	for (i = 0; i < npages ; i++) {
-		if (!iommu_pagecache_entry_add(&tbl->cache, d, cpupage + i))
+		if (xa_is_err(tmp)) {
+			kfree(d);
 			break;
+		}
+
+		tmp = xa_store(&tbl->cache.cpupages, cpupage + i, d, GFP_ATOMIC);
+		if (xa_is_err(tmp)) {
+			xa_erase(&tbl->cache.dmapages, dmapage + i);
+			kfree(d);
+			break;
+		}
+
+		if (tmp)	/* Entry was present */
+			xchg(&d->next_map.next, &tmp->next_map);
+
+		n = xchg(&tbl->cache.fifo_add.first, &d->fifo);
+		if (n)
+			n->next = &d->fifo;
 	}
-
-	/* Failed adding the first page */
-	if (i == 0)
-		goto out_free;
-
-	n = xchg(&tbl->cache.fifo_add.first, &d->fifo);
-	if (n)
-		n->next = &d->fifo;
-
-	return;
-
-out_free:
-	kfree(d);
 }
 
 /**
@@ -337,7 +380,7 @@ void iommu_pagecache_destroy(struct iommu_table *tbl)
 void iommu_pagecache_init(struct iommu_table *tbl)
 {
 	struct iommu_pagecache *cache = &tbl->cache;
-	struct dma_mapping *d;
+	struct iommu_pagecache_entry *d;
 
 	init_llist_head(&cache->fifo_add);
 	init_llist_head(&cache->fifo_del);
@@ -353,7 +396,6 @@ void iommu_pagecache_init(struct iommu_table *tbl)
 	d->cpupage = -1UL;
 	d->dmapage = -1UL;
 	d->direction = DMA_NONE;
-	d->size = 0;
 	atomic_set(&d->count, 1); //Needs to be bigger than 0, so it can't be freed
 
 	xa_init(&cache->cpupages);
