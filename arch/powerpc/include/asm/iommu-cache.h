@@ -14,6 +14,9 @@ struct iommu_pagecache {
 	struct xarray dmapages;
 	atomic64_t cachesize;
 	unsigned long max_cachesize;
+#ifdef IOMMU_DBG
+	struct xarray debug;
+#endif
 };
 
 #include <asm/iommu.h>
