@@ -12,9 +12,13 @@ struct iommu_pagecache_entry {
 };
 
 struct iommu_pagecache_unmap_entry {
-	struct list_head list;
 	unsigned long dmabase;
 	unsigned long size;
+};
+
+struct iommu_pagecache_unmap_buffer {
+	unsigned long entry_count;
+	struct iommu_pagecache_unmap_entry entry[];
 };
 
 #define IOMMU_CACHE_MAX		75	/* percent of the total pages */
@@ -223,48 +227,51 @@ free_dma:
 	xa_erase(&cache->dmapages, d->dmapage);
 }
 
-static inline bool iommu_pagecache_unmap_add(struct list_head **l, unsigned long dmapage)
+static inline void iommu_pagecache_unmap(struct iommu_table *tbl,
+					 struct iommu_pagecache_unmap_buffer *b)
 {
-	struct iommu_pagecache_unmap_entry *u;
+	unsigned long freed = 0;
+	int i;
 
-	if (!*l)
-		goto new_entry;
+	for (i = 0; i < b->entry_count; i++) {
+		__iommu_free(tbl, b->entry[i].dmabase << tbl->it_page_shift, b->entry[i].size);
+		freed += b->entry[i].size;
+	}
 
-	list_for_each_entry(u, *l, list) {
-		if (dmapage == u->dmabase + u->size) {
-			u->size++;
-			return true;
+	kfree(b);
+
+	atomic64_sub(freed, &tbl->cache.cachesize);
+}
+
+
+static inline void iommu_pagecache_unmap_add(struct iommu_pagecache_unmap_buffer *b,
+					     unsigned long dmapage)
+{
+	int i;
+
+	/* The last one is usually the one to merge */
+	for (i = b->entry_count - 1 ; i >= 0; i--) {
+		if (dmapage == b->entry[i].dmabase + b->entry[i].size) {
+			b->entry[i].size++;
+			return;
 		}
 	}
 
-new_entry:
-	u = kmalloc(sizeof(*u), GFP_ATOMIC);
-	if (!u)
-		return false;
-
-	u->dmabase = dmapage;
-	u->size = 1;
-
-	if (*l)
-		list_add(&u->list, *l);
-	else
-		INIT_LIST_HEAD(*l = &u->list);
-
-	return true;
+	b->entry[b->entry_count].dmabase = dmapage;
+	b->entry[b->entry_count].size = 1;
+	b->entry_count++;
 }
 
-static inline void iommu_pagecache_unmap(struct iommu_table *tbl, struct list_head *l)
+static inline struct iommu_pagecache_unmap_buffer *iommu_pagecache_unmap_new(unsigned long size)
 {
-	struct iommu_pagecache_unmap_entry *u, *tmp;
-	unsigned long freed = 0;
+	struct iommu_pagecache_unmap_buffer *b;
 
-	list_for_each_entry_safe(u, tmp, l, list) {
-		__iommu_free(tbl, u->dmabase << tbl->it_page_shift, u->size);
-		freed += u->size;
-		kfree(u);
-	}
+	b = kmalloc(sizeof(*b) + sizeof(b->entry[0]) * size, GFP_ATOMIC);
+	if (!b)
+		return NULL;
 
-	atomic64_sub(freed, &tbl->cache.cachesize);
+	b->entry_count = 0;
+	return b;
 }
 
 /**
@@ -278,12 +285,18 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 	struct llist_node *n;
 	struct iommu_pagecache *cache = &tbl->cache;
 	unsigned long removed = 0;
-	struct list_head *l = NULL;
+	struct iommu_pagecache_unmap_buffer *b;
 	int r;
 
 	n = llist_del_all(&cache->fifo_del);
 	if (!n)
 		return;
+
+	b = iommu_pagecache_unmap_new(count);
+	if (!b) {
+		xchg(&cache->fifo_del.first, n);
+		return;
+	}
 
 	llist_for_each_entry_safe(d, tmp, n, fifo) {
 		r = atomic_sub_return_relaxed(IOMMU_CACHE_REMOVING, &d->count);
@@ -304,19 +317,17 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 
 		/* Count was 0, fully remove entry */
 		iommu_pagecache_entry_remove(cache, d);
-		iommu_pagecache_unmap_add(&l, d->dmapage);
+		iommu_pagecache_unmap_add(b, d->dmapage);
+
 		kfree(d);
 
 		if (++removed >= count)
 			break;
 	}
 
-	/* No entry removed */
-	if (!l)
-		return;
-
 	xchg(&cache->fifo_del.first, &tmp->fifo);
-	iommu_pagecache_unmap(tbl, l);
+
+	iommu_pagecache_unmap(tbl, b);
 }
 
 /**
@@ -334,7 +345,7 @@ void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsign
 	long exceeding;
 	unsigned long dmapage = dma_handle >> tbl->it_page_shift;
 	unsigned long dmapage_end = dmapage + npages;
-	struct list_head *l = NULL;
+	struct iommu_pagecache_unmap_buffer *b = NULL;
 
 	for (; dmapage < dmapage_end; dmapage++) {
 		d = xa_load(&tbl->cache.dmapages, dmapage);
@@ -343,11 +354,20 @@ void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsign
 			atomic_dec(&d->count);
 			continue;
 		}
-		iommu_pagecache_unmap_add(&l, dmapage);
+
+		if (!b) {
+			b = iommu_pagecache_unmap_new(npages);
+			if (!b) {
+				__iommu_free(tbl, dmapage << tbl->it_page_shift, npages);
+				continue;
+			}
+		}
+
+		iommu_pagecache_unmap_add(b, dmapage);
 	}
 
-	if (l)
-		iommu_pagecache_unmap(tbl, l);
+	if (b)
+		iommu_pagecache_unmap(tbl, b);
 
 	exceeding = atomic64_read(&tbl->cache.cachesize) - tbl->cache.max_cachesize;
 	if (exceeding > 0)
