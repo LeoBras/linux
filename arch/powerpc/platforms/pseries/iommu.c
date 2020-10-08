@@ -733,6 +733,7 @@ static void pci_dma_bus_setup_pSeriesLP(struct pci_bus *bus)
 		iommu_table_setparms_lpar(ppci->phb, pdn, tbl,
 				ppci->table_group, dma_window);
 		iommu_init_table(tbl, ppci->phb->node, 0, 0);
+		iommu_pagecache_init(tbl);
 		iommu_register_group(ppci->table_group,
 				pci_domain_nr(bus), 0);
 		pr_debug("  created table: %p\n", ppci->table_group);
@@ -1435,6 +1436,7 @@ static void pci_dma_dev_setup_pSeriesLP(struct pci_dev *dev)
 		iommu_table_setparms_lpar(pci->phb, pdn, tbl,
 				pci->table_group, dma_window);
 		iommu_init_table(tbl, pci->phb->node, 0, 0);
+		iommu_pagecache_init(tbl);
 		iommu_register_group(pci->table_group,
 				pci_domain_nr(pci->phb->bus), 0);
 		pr_debug("  created table: %p\n", pci->table_group);

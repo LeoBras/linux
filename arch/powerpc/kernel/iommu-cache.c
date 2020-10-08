@@ -7,7 +7,7 @@ struct iommu_pagecache_entry {
 	struct llist_node next_map;	/* Next mapping for this cpu page */
 	unsigned long dmapage;
 	unsigned long cpupage;
-	atomic_t count;		/* Usage count */
+	atomic_t count;			/* Usage count */
 	enum dma_data_direction direction;
 };
 
@@ -21,11 +21,9 @@ struct iommu_pagecache_unmap_buffer {
 	struct iommu_pagecache_unmap_entry entry[];
 };
 
-#define IOMMU_CACHE_MAX		75	/* percent of the total pages */
-#define IOMMU_CACHE_THRES	128	/* pages */
-#define IOMMU_CACHE_REMOVING	0x0deadbee
+#define IOMMU_PAGECACHE_REMOVING	0x0deadbee
 
-#ifdef IOMMU_DBG
+#ifdef IOMMU_PAGECACHE_DBG
 #define DEBUG_SIZE		2048
 
 static inline char *iommu_pagecache_dbg(struct iommu_pagecache *cache, unsigned long dmapage,
@@ -60,16 +58,16 @@ static inline void iommu_pagecache_dbg_add(struct iommu_pagecache *cache, unsign
 }
 
 #else
-#define iommu_pagecache_dbg(x, y, z) /* Do nothing */
-#define iommu_pagecache_dbg_in_use(x, y, z) /* Do nothing */
-#define iommu_pagecache_dbg_add(x, y) /* Do nothing */
+#define iommu_pagecache_dbg(...)	/* Do nothing */
+#define iommu_pagecache_dbg_in_use(...)	/* Do nothing */
+#define iommu_pagecache_dbg_add(...)	/* Do nothing */
 #endif
 
 static inline bool iommu_pagecache_use_one(struct iommu_pagecache_entry *d)
 {
-	int r = atomic_fetch_add_unless(&d->count, 1, -IOMMU_CACHE_REMOVING);
+	int r = atomic_fetch_add_unless(&d->count, 1, -IOMMU_PAGECACHE_REMOVING);
 
-	return (r != -IOMMU_CACHE_REMOVING);
+	return (r != -IOMMU_PAGECACHE_REMOVING);
 }
 
 static inline bool iommu_pagecache_use_range(struct iommu_pagecache *cache,
@@ -131,8 +129,8 @@ out_reverse:
  * Return: DMA mapping for range/direction present in cache
  *	   DMA_MAPPING_ERROR if not found.
  */
-dma_addr_t iommu_pagecache_use(struct iommu_table *tbl, void *page, unsigned int npages,
-			       enum dma_data_direction direction)
+dma_addr_t _iommu_pagecache_use(struct iommu_table *tbl, void *page, unsigned int npages,
+				enum dma_data_direction direction)
 {
 	struct iommu_pagecache_entry *d;
 	const unsigned long p = (unsigned long)page >> tbl->it_page_shift;
@@ -299,8 +297,8 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 	}
 
 	llist_for_each_entry_safe(d, tmp, n, fifo) {
-		r = atomic_sub_return_relaxed(IOMMU_CACHE_REMOVING, &d->count);
-		if (r != -IOMMU_CACHE_REMOVING) {
+		r = atomic_sub_return_relaxed(IOMMU_PAGECACHE_REMOVING, &d->count);
+		if (r != -IOMMU_PAGECACHE_REMOVING) {
 			iommu_pagecache_dbg_in_use(&tbl->cache, d->dmapage,
 						   r + IOMMU_CACHE_REMOVING);
 
@@ -309,7 +307,7 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 			if (n)
 				n->next = &d->fifo;
 
-			atomic_add(IOMMU_CACHE_REMOVING, &d->count);
+			atomic_add(IOMMU_PAGECACHE_REMOVING, &d->count);
 
 			continue;
 		}
@@ -339,7 +337,7 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
  * Decrements an atomic counter for a mapping in this dma_handle + npages, and remove
  * some unused dma mappings from iommu_pagecache fifo.
  */
-void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsigned int npages)
+void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsigned int npages)
 {
 	struct iommu_pagecache_entry *d;
 	long exceeding;
@@ -371,7 +369,7 @@ void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsign
 
 	exceeding = atomic64_read(&tbl->cache.cachesize) - tbl->cache.max_cachesize;
 	if (exceeding > 0)
-		iommu_pagecache_clean(tbl, exceeding + IOMMU_CACHE_THRES);
+		iommu_pagecache_clean(tbl, exceeding + CONFIG_IOMMU_PAGECACHE_THRESH);
 }
 
 /**
@@ -385,8 +383,8 @@ void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsign
  * Create a dma_mapping and add it to dmapages and cpupages XArray, then add it to fifo.
  * On both cpupages and dmapages, an entry will be created for each page in the mapping.
  */
-void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npages, dma_addr_t addr,
-			 enum dma_data_direction direction)
+void _iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npages, dma_addr_t addr,
+			  enum dma_data_direction direction)
 {
 	struct iommu_pagecache_entry *d, *tmp;
 	struct llist_node *n;
@@ -478,10 +476,13 @@ void iommu_pagecache_init(struct iommu_table *tbl)
 
 	xa_init(&cache->cpupages);
 	xa_init(&cache->dmapages);
-#ifdef IOMMU_DBG
+#ifdef IOMMU_PAGECACHE_DBG
 	xa_init(&cache->debug);
 #endif
 
 	atomic64_set(&cache->cachesize, 0);
-	cache->max_cachesize = (IOMMU_CACHE_MAX * tbl->it_size) / 100;
+	cache->max_cachesize = (CONFIG_IOMMU_PAGECACHE_USAGE * tbl->it_size) / 100;
+
+	pr_err("IOMMU pagecache started on bus %lx, with %lx entries.\n", tbl->it_busno,
+	       cache->max_cachesize);
 }
