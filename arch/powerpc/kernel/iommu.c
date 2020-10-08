@@ -764,8 +764,6 @@ struct iommu_table *iommu_init_table(struct iommu_table *tbl, int nid,
 
 	iommu_table_clear(tbl);
 
-	iommu_pagecache_init(tbl);
-
 	if (!welcomed) {
 		printk(KERN_INFO "IOMMU table initialized, virtual merging %s\n",
 		       novmerge ? "disabled" : "enabled");

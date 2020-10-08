@@ -992,6 +992,31 @@ config PPC_RTAS_FILTER
 	  Say Y unless you know what you are doing and the filter is causing
 	  problems for you.
 
+config IOMMU_PAGECACHE
+	bool "IOMMU pagecache on indirect mapping"
+	default y
+	depends on PPC_SPLPAR
+	help
+	  Caches IOMMU page mappings so they can be reused.
+	  Virtualized systems that depend on hypercalls for mapping and
+	  unmapping IOMMU pages on system pages will notice performance
+	  improvement, due to the decrease of hypercalls being made.
+
+	  No change in performance should be noticed during direct DMA.
+
+config IOMMU_PAGECACHE_USAGE
+	int "Pagecache usage (%) of the available IOMMU pages"
+	default 75
+	depends on IOMMU_PAGECACHE
+
+config IOMMU_PAGECACHE_THRESH
+	int "Pagecache threshold for page removal"
+	default 128
+	depends on IOMMU_PAGECACHE
+	help
+	  This value will be added to the exceeding pages in cache
+	  for batch page removal.
+
 endmenu
 
 config ISA_DMA_API
