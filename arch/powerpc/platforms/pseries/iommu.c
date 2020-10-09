@@ -23,6 +23,7 @@
 #include <linux/memory.h>
 #include <linux/of.h>
 #include <linux/iommu.h>
+#include <asm/iommu-cache.h>
 #include <linux/rculist.h>
 #include <asm/io.h>
 #include <asm/prom.h>
