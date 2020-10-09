@@ -29,6 +29,7 @@
 #include <asm/io.h>
 #include <asm/prom.h>
 #include <asm/iommu.h>
+#include <asm/iommu-cache.h>
 #include <asm/pci-bridge.h>
 #include <asm/machdep.h>
 #include <asm/kdump.h>
@@ -527,7 +528,7 @@ int ppc_iommu_map_sg(struct device *dev, struct iommu_table *tbl,
 		if(unlikely(build_fail))
 			goto failure;
 
-		iommu_pagecache_add(tbl, vaddr, npages, dma_addr, direction);
+		iommu_pagecache_add(tbl, sg_virt(s), npages, dma_addr, direction);
 
 		/* If we are in an open segment, try merging */
 		if (segstart != s) {
