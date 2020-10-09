@@ -527,6 +527,8 @@ int ppc_iommu_map_sg(struct device *dev, struct iommu_table *tbl,
 		if(unlikely(build_fail))
 			goto failure;
 
+		iommu_pagecache_add(tbl, vaddr, npages, dma_addr, direction);
+
 		/* If we are in an open segment, try merging */
 		if (segstart != s) {
 			DBG("  - trying merge...\n");
@@ -587,7 +589,7 @@ int ppc_iommu_map_sg(struct device *dev, struct iommu_table *tbl,
 			vaddr = s->dma_address & IOMMU_PAGE_MASK(tbl);
 			npages = iommu_num_pages(s->dma_address, s->dma_length,
 						 IOMMU_PAGE_SIZE(tbl));
-			__iommu_free(tbl, vaddr, npages);
+			iommu_pagecache_free(tbl, vaddr, npages);
 			s->dma_address = DMA_MAPPING_ERROR;
 			s->dma_length = 0;
 		}
@@ -618,7 +620,7 @@ void ppc_iommu_unmap_sg(struct iommu_table *tbl, struct scatterlist *sglist,
 			break;
 		npages = iommu_num_pages(dma_handle, sg->dma_length,
 					 IOMMU_PAGE_SIZE(tbl));
-		__iommu_free(tbl, dma_handle, npages);
+		iommu_pagecache_free(tbl, dma_handle, npages);
 		sg = sg_next(sg);
 	}
 
