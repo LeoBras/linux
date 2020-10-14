@@ -5,9 +5,9 @@
 struct iommu_pagecache_entry {
 	struct llist_node fifo;
 	struct llist_node next_map;	/* Next mapping for this cpu page */
+	atomic64_t count;		/* Usage count */
 	unsigned long dmapage;
 	unsigned long cpupage;
-	atomic_t count;			/* Usage count */
 	enum dma_data_direction direction;
 };
 
@@ -65,7 +65,7 @@ static inline void iommu_pagecache_dbg_add(struct iommu_pagecache *cache, unsign
 
 static inline bool iommu_pagecache_use_one(struct iommu_pagecache_entry *d)
 {
-	int r = atomic_fetch_add_unless(&d->count, 1, -IOMMU_PAGECACHE_REMOVING);
+	int r = atomic64_fetch_add_unless(&d->count, 1, -IOMMU_PAGECACHE_REMOVING);
 
 	return (r != -IOMMU_PAGECACHE_REMOVING);
 }
@@ -80,7 +80,7 @@ static inline bool iommu_pagecache_use_range(struct iommu_pagecache *cache,
 	const unsigned long cpupage = d->cpupage;
 
 	/* Reserve first page*/
-	if (!iommu_pagecache_use_one(d))
+	if (unlikely(!iommu_pagecache_use_one(d)))
 		return false;
 
 	iommu_pagecache_dbg(cache, dmapage, "+");
@@ -94,7 +94,7 @@ static inline bool iommu_pagecache_use_range(struct iommu_pagecache *cache,
 		if (!DMA_DIR_COMPAT(tmp->direction, direction))
 			goto out_reverse;
 
-		if (!iommu_pagecache_use_one(tmp))
+		if (unlikely(!iommu_pagecache_use_one(tmp)))
 			goto out_reverse;
 
 		iommu_pagecache_dbg(cache, dmapage + i, "+");
@@ -106,12 +106,12 @@ out_reverse:
 	for (i++; i < npages; i++) {
 		tmp = xa_load(&cache->dmapages, dmapage + i);
 		if (tmp) {
-			atomic_dec(&tmp->count);
+			atomic64_dec(&tmp->count);
 			iommu_pagecache_dbg(cache, dmapage + i, "-");
 		}
 	}
 
-	atomic_dec(&d->count);
+	atomic64_dec(&d->count);
 	iommu_pagecache_dbg(cache, dmapage, "-");
 
 	return false;
@@ -297,7 +297,7 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 	}
 
 	llist_for_each_entry_safe(d, tmp, n, fifo) {
-		r = atomic_sub_return_relaxed(IOMMU_PAGECACHE_REMOVING, &d->count);
+		r = atomic64_sub_return_relaxed(IOMMU_PAGECACHE_REMOVING, &d->count);
 		if (r != -IOMMU_PAGECACHE_REMOVING) {
 			iommu_pagecache_dbg_in_use(&tbl->cache, d->dmapage,
 						   r + IOMMU_CACHE_REMOVING);
@@ -307,7 +307,7 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 			if (n)
 				n->next = &d->fifo;
 
-			atomic_add(IOMMU_PAGECACHE_REMOVING, &d->count);
+			atomic64_add(IOMMU_PAGECACHE_REMOVING, &d->count);
 
 			continue;
 		}
@@ -349,7 +349,7 @@ void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsig
 		d = xa_load(&tbl->cache.dmapages, dmapage);
 		if (d) {
 			iommu_pagecache_dbg(&tbl->cache, dmapage, "-");
-			atomic_dec(&d->count);
+			atomic64_dec(&d->count);
 			continue;
 		}
 
@@ -407,7 +407,7 @@ void _iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npag
 		d->direction = direction;
 		d->fifo.next = NULL;
 		d->next_map.next = NULL;
-		atomic_set(&d->count, 1);
+		atomic64_set(&d->count, 1);
 
 		tmp = xa_store(&tbl->cache.dmapages, dmapage + i, d, GFP_ATOMIC);
 		if (xa_is_err(tmp)) {
@@ -472,7 +472,7 @@ void iommu_pagecache_init(struct iommu_table *tbl)
 	d->direction = DMA_NONE;
 
 	/* Needs to be bigger than 0, to keep the fifo integrity (can't be freed). */
-	atomic_set(&d->count, 1);
+	atomic64_set(&d->count, 1);
 
 	xa_init(&cache->cpupages);
 	xa_init(&cache->dmapages);
