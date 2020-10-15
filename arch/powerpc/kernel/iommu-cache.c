@@ -225,20 +225,35 @@ free_dma:
 	xa_erase(&cache->dmapages, d->dmapage);
 }
 
+static inline struct iommu_pageacache_lfifo *iommu_pagecache_lfifo_chooser(struct iommu_table *tbl,
+									   unsigned long dmapage)
+{
+	if ((dmapage - tbl->it_offset) > tbl->large_pool.start)
+		return &tbl->cache.large;
+
+	return &tbl->cache.small;
+}
+
 static inline void iommu_pagecache_unmap(struct iommu_table *tbl,
 					 struct iommu_pagecache_unmap_buffer *b)
 {
-	unsigned long freed = 0;
+	unsigned long freed = 0, large_freed = 0;
 	int i;
 
 	for (i = 0; i < b->entry_count; i++) {
 		__iommu_free(tbl, b->entry[i].dmabase << tbl->it_page_shift, b->entry[i].size);
-		freed += b->entry[i].size;
+		if (iommu_pagecache_lfifo_chooser(tbl, b->entry[i].dmabase) == &tbl->cache.large)
+			large_freed += b->entry[i].size;
+		else
+			freed += b->entry[i].size;
 	}
 
 	kfree(b);
 
-	atomic64_sub(freed, &tbl->cache.cachesize);
+	if (freed)
+		atomic64_sub(freed, &tbl->cache.small.cachesize);
+	if (large_freed)
+		atomic64_sub(large_freed, &tbl->cache.large.cachesize);
 }
 
 
@@ -277,7 +292,8 @@ static inline struct iommu_pagecache_unmap_buffer *iommu_pagecache_unmap_new(uns
  * @tbl: Device's iommu_table.
  * @count: number of entries to be removed.
  */
-static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
+static void iommu_pagecache_clean(struct iommu_table *tbl, struct iommu_pageacache_lfifo *lfifo,
+				  const long count)
 {
 	struct iommu_pagecache_entry *d, *tmp;
 	struct llist_node *n;
@@ -286,13 +302,13 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 	struct iommu_pagecache_unmap_buffer *b;
 	int r;
 
-	n = llist_del_all(&cache->fifo_del);
+	n = llist_del_all(&lfifo->fifo_del);
 	if (!n)
 		return;
 
 	b = iommu_pagecache_unmap_new(count);
 	if (!b) {
-		xchg(&cache->fifo_del.first, n);
+		xchg(&lfifo->fifo_del.first, n);
 		return;
 	}
 
@@ -303,7 +319,7 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 						   r + IOMMU_CACHE_REMOVING);
 
 			/* In use. Re-add it to list. */
-			n = xchg(&cache->fifo_add.first, &d->fifo);
+			n = xchg(&lfifo->fifo_add.first, &d->fifo);
 			if (n)
 				n->next = &d->fifo;
 
@@ -323,7 +339,7 @@ static void iommu_pagecache_clean(struct iommu_table *tbl, const long count)
 			break;
 	}
 
-	xchg(&cache->fifo_del.first, &tmp->fifo);
+	xchg(&lfifo->fifo_del.first, &tmp->fifo);
 
 	iommu_pagecache_unmap(tbl, b);
 }
@@ -344,6 +360,7 @@ void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsig
 	unsigned long dmapage = dma_handle >> tbl->it_page_shift;
 	unsigned long dmapage_end = dmapage + npages;
 	struct iommu_pagecache_unmap_buffer *b = NULL;
+	struct iommu_pageacache_lfifo *lfifo;
 
 	for (; dmapage < dmapage_end; dmapage++) {
 		d = xa_load(&tbl->cache.dmapages, dmapage);
@@ -356,7 +373,10 @@ void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsig
 		if (!b) {
 			b = iommu_pagecache_unmap_new(npages);
 			if (!b) {
-				__iommu_free(tbl, dmapage << tbl->it_page_shift, npages);
+				__iommu_free(tbl, dmapage << tbl->it_page_shift, 1);
+
+				lfifo = iommu_pagecache_lfifo_chooser(tbl, dmapage);
+				atomic64_dec(&lfifo->cachesize);
 				continue;
 			}
 		}
@@ -367,9 +387,15 @@ void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsig
 	if (b)
 		iommu_pagecache_unmap(tbl, b);
 
-	exceeding = atomic64_read(&tbl->cache.cachesize) - tbl->cache.max_cachesize;
+	lfifo = &tbl->cache.small;
+	exceeding = atomic64_read(&lfifo->cachesize) - lfifo->max_cachesize;
 	if (exceeding > 0)
-		iommu_pagecache_clean(tbl, exceeding + CONFIG_IOMMU_PAGECACHE_THRESH);
+		iommu_pagecache_clean(tbl, lfifo, exceeding + CONFIG_IOMMU_PAGECACHE_THRESH);
+
+	lfifo = &tbl->cache.large;
+	exceeding = atomic64_read(&lfifo->cachesize) - lfifo->max_cachesize;
+	if (exceeding > 0)
+		iommu_pagecache_clean(tbl, lfifo, exceeding + CONFIG_IOMMU_PAGECACHE_THRESH);
 }
 
 /**
@@ -386,16 +412,19 @@ void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsig
 void _iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npages, dma_addr_t addr,
 			  enum dma_data_direction direction)
 {
+	struct iommu_pageacache_lfifo *lfifo;
 	struct iommu_pagecache_entry *d, *tmp;
 	struct llist_node *n;
 	unsigned long cpupage, dmapage;
 	unsigned int i;
 
-	/* Increment cachesize even if adding fails: avoid too many fails causing starvation */
-	atomic64_add(npages, &tbl->cache.cachesize);
-
 	cpupage = (unsigned long)page >> tbl->it_page_shift;
 	dmapage = (unsigned long)addr >> tbl->it_page_shift;
+
+	lfifo = iommu_pagecache_lfifo_chooser(tbl, dmapage);
+
+	/* Increment cachesize even if adding fails: avoid too many fails causing starvation */
+	atomic64_add(npages, &lfifo->cachesize);
 
 	for (i = 0; i < npages ; i++) {
 		d = kmalloc(sizeof(*d), GFP_ATOMIC);
@@ -425,7 +454,7 @@ void _iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npag
 		if (tmp)	/* Entry was present */
 			xchg(&d->next_map.next, &tmp->next_map);
 
-		n = xchg(&tbl->cache.fifo_add.first, &d->fifo);
+		n = xchg(&lfifo->fifo_add.first, &d->fifo);
 		if (n)
 			n->next = &d->fifo;
 
@@ -441,10 +470,42 @@ void _iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npag
  */
 void iommu_pagecache_destroy(struct iommu_table *tbl)
 {
-	iommu_pagecache_clean(tbl, atomic64_read(&tbl->cache.cachesize));
+	struct iommu_pageacache_lfifo *lfifo;
+
+	lfifo = &tbl->cache.small;
+	iommu_pagecache_clean(tbl, lfifo, atomic64_read(&lfifo->cachesize));
+	lfifo = &tbl->cache.large;
+	iommu_pagecache_clean(tbl, lfifo, atomic64_read(&lfifo->cachesize));
 
 	xa_destroy(&tbl->cache.cpupages);
 	xa_destroy(&tbl->cache.dmapages);
+}
+
+static inline void iommu_pagecache_lfifo_init(struct iommu_pageacache_lfifo *lfifo,
+					      unsigned long size)
+{
+	struct iommu_pagecache_entry *d;
+
+	/* First entry for linking both llist_heads */
+	d = kmalloc(sizeof(*d), GFP_KERNEL);
+	if (!d)
+		panic("%s: Can't allocate %ld bytes\n", __func__, sizeof(*d));
+
+	d->cpupage = -1UL;
+	d->dmapage = -1UL;
+	d->direction = DMA_NONE;
+
+	/* Needs to be bigger than 0, to keep the fifo integrity (can't be freed). */
+	atomic64_set(&d->count, 1);
+
+	init_llist_head(&lfifo->fifo_add);
+	init_llist_head(&lfifo->fifo_del);
+
+	llist_add(&d->fifo, &lfifo->fifo_add);
+	llist_add(&d->fifo, &lfifo->fifo_del);
+
+	atomic64_set(&lfifo->cachesize, 0);
+	lfifo->max_cachesize = (CONFIG_IOMMU_PAGECACHE_USAGE * size) / 100;
 }
 
 /**
@@ -454,25 +515,6 @@ void iommu_pagecache_destroy(struct iommu_table *tbl)
 void iommu_pagecache_init(struct iommu_table *tbl)
 {
 	struct iommu_pagecache *cache = &tbl->cache;
-	struct iommu_pagecache_entry *d;
-
-	init_llist_head(&cache->fifo_add);
-	init_llist_head(&cache->fifo_del);
-
-	/* First entry for linking both llist_heads */
-	d = kmalloc(sizeof(*d), GFP_KERNEL);
-	if (!d)
-		panic("%s: Can't allocate %ld bytes\n", __func__, sizeof(*d));
-
-	llist_add(&d->fifo, &cache->fifo_add);
-	llist_add(&d->fifo, &cache->fifo_del);
-
-	d->cpupage = -1UL;
-	d->dmapage = -1UL;
-	d->direction = DMA_NONE;
-
-	/* Needs to be bigger than 0, to keep the fifo integrity (can't be freed). */
-	atomic64_set(&d->count, 1);
 
 	xa_init(&cache->cpupages);
 	xa_init(&cache->dmapages);
@@ -480,9 +522,9 @@ void iommu_pagecache_init(struct iommu_table *tbl)
 	xa_init(&cache->debug);
 #endif
 
-	atomic64_set(&cache->cachesize, 0);
-	cache->max_cachesize = (CONFIG_IOMMU_PAGECACHE_USAGE * tbl->it_size) / 100;
+	iommu_pagecache_lfifo_init(&cache->small, tbl->large_pool.start - 1);
+	iommu_pagecache_lfifo_init(&cache->large, tbl->large_pool.end - tbl->large_pool.start);
 
-	pr_err("IOMMU pagecache started on bus %lx, with %lx entries.\n", tbl->it_busno,
-	       cache->max_cachesize);
+	pr_err("IOMMU pagecache started on bus %lx, with %lx small entries and %lx large entries.\n",
+	       tbl->it_busno, cache->small.max_cachesize, cache->large.max_cachesize);
 }

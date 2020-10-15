@@ -17,14 +17,14 @@ void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsig
 static inline void iommu_pagecache_add(struct iommu_table *tbl, void *page, unsigned int npages,
 				       dma_addr_t addr, enum dma_data_direction direction)
 {
-	if (tbl->cache.max_cachesize)
+	if (tbl->cache.small.max_cachesize)
 		_iommu_pagecache_add(tbl, page, npages, addr, direction);
 }
 
 static inline dma_addr_t iommu_pagecache_use(struct iommu_table *tbl, void *page,
 					     unsigned int npages, enum dma_data_direction direction)
 {
-	if (tbl->cache.max_cachesize)
+	if (tbl->cache.small.max_cachesize)
 		return _iommu_pagecache_use(tbl, page, npages, direction);
 	else
 		return DMA_MAPPING_ERROR;
@@ -33,7 +33,7 @@ static inline dma_addr_t iommu_pagecache_use(struct iommu_table *tbl, void *page
 static inline void iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle,
 					unsigned int npages)
 {
-	if (tbl->cache.max_cachesize)
+	if (tbl->cache.small.max_cachesize)
 		_iommu_pagecache_free(tbl, dma_handle, npages);
 	else
 		__iommu_free(tbl, dma_handle, npages);
