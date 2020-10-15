@@ -8,13 +8,18 @@
 #include <linux/xarray.h>
 #include <linux/atomic.h>
 
-struct iommu_pagecache {
+struct iommu_pageacache_lfifo {
 	struct llist_head fifo_add;
 	struct llist_head fifo_del;
-	struct xarray cpupages;
-	struct xarray dmapages;
 	atomic64_t cachesize;
 	unsigned long max_cachesize;
+};
+
+struct iommu_pagecache {
+	struct iommu_pageacache_lfifo small;
+	struct iommu_pageacache_lfifo large;
+	struct xarray cpupages;
+	struct xarray dmapages;
 #ifdef IOMMU_PAGECACHE_DBG
 	struct xarray debug;
 #endif
