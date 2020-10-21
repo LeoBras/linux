@@ -362,9 +362,11 @@ void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsig
 	struct iommu_pagecache_unmap_buffer *b = NULL;
 	struct iommu_pageacache_lfifo *lfifo;
 
+	lfifo = iommu_pagecache_lfifo_chooser(tbl, dmapage);
+
 	for (; dmapage < dmapage_end; dmapage++) {
 		d = xa_load(&tbl->cache.dmapages, dmapage);
-		if (d) {
+		if (likely(d)) {
 			iommu_pagecache_dbg(&tbl->cache, dmapage, "-");
 			atomic64_dec(&d->count);
 			continue;
@@ -374,8 +376,6 @@ void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsig
 			b = iommu_pagecache_unmap_new(npages);
 			if (!b) {
 				__iommu_free(tbl, dmapage << tbl->it_page_shift, 1);
-
-				lfifo = iommu_pagecache_lfifo_chooser(tbl, dmapage);
 				atomic64_dec(&lfifo->cachesize);
 				continue;
 			}
@@ -384,15 +384,9 @@ void _iommu_pagecache_free(struct iommu_table *tbl, dma_addr_t dma_handle, unsig
 		iommu_pagecache_unmap_add(b, dmapage);
 	}
 
-	if (b)
+	if (unlikely(b))
 		iommu_pagecache_unmap(tbl, b);
 
-	lfifo = &tbl->cache.small;
-	exceeding = atomic64_read(&lfifo->cachesize) - lfifo->max_cachesize;
-	if (exceeding > 0)
-		iommu_pagecache_clean(tbl, lfifo, exceeding + CONFIG_IOMMU_PAGECACHE_THRESH);
-
-	lfifo = &tbl->cache.large;
 	exceeding = atomic64_read(&lfifo->cachesize) - lfifo->max_cachesize;
 	if (exceeding > 0)
 		iommu_pagecache_clean(tbl, lfifo, exceeding + CONFIG_IOMMU_PAGECACHE_THRESH);
