@@ -9,30 +9,49 @@
 #include <linux/atomic.h>
 
 static int first = 0;
-#warning "DEBUGGING smp_call_function v2"
+#warning "DEBUGGING smp_call_function v3"
 __weak void arch_freq_prepare_all(void)
 {
 }
 
 static void justsum(void *buf)
 {
-	atomic_t *a = buf;
-	atomic_add(smp_processor_id() + 1, a);
+	int *a = buf, cpu;
+
+	cpu = smp_processor_id();
+	a[cpu] = cpu;
+
 	if (first++ == 0)
 		pr_err("leobras: debugging smp_call_function\n");
 
 }
 
+static void smptest(void)
+{
+	int c;
+	int i, a[8] = {-1};
+
+	c = smp_processor_id();
+	a[c] = c + 100;
+
+	smp_call_function(justsum, &a, true);
+
+	for (i = 0; i < 4; i++) {
+		if (a[i] == i )
+			continue;
+		if (i == c)
+			continue;
+		pr_err("leobras: debugging smp_call_funct: %d found in cpu %d (0-7)\n", a[i], i);
+	}
+}
+
 extern const struct seq_operations cpuinfo_op;
 static int cpuinfo_open(struct inode *inode, struct file *file)
 {
-	atomic_t a;
-	int b;
+	int i = 0;
 
-	smp_call_function(justsum, &a, true);
-	b = atomic_read(&a) + smp_processor_id() + 1;
-	if (b != (1 + 2 + 3 + 4 + 5 + 6 + 7 + 8))
-		pr_err("leobras: debugging smp_call_funct only ran in %d cpus\n", b);
+	for (i = 0; i < 10; i++)
+		smptest();
 
 	arch_freq_prepare_all();
 	return seq_open(file, &cpuinfo_op);
