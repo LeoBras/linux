@@ -51,7 +51,7 @@ static void smptest(void)
 
 static void smptest2(int cpu)
 {
-	int a[8] = {0};
+	int a[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
 	smp_call_function_single(cpu, justsum, &a, true);
 	if (a[cpu] != cpu)
 		pr_err("leobras: debugging smp_call_funct: %d found in cpu %d (0-7)\n", a[cpu], cpu);
