@@ -169,8 +169,8 @@ static void (*ic_cause_ipi)(int cpu) __ro_after_init;
 /* Use msgsndp doorbells target is a sibling, else use interrupt controller */
 static void dbell_or_ic_cause_ipi(int cpu)
 {
-	if (doorbell_try_core_ipi(cpu))
-		return;
+//	if (doorbell_try_core_ipi(cpu))
+//		return;
 
 	ic_cause_ipi(cpu);
 }
