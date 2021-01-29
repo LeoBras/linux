@@ -21,7 +21,7 @@
 void doorbell_exception(struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
-	const u32 msg = PPC_DBELL_MSGTYPE << 27;
+	const u32 msg = (PPC_DBELL_MSGTYPE + 1) << 27;
 
 	irq_enter();
 	trace_doorbell_entry(regs);
