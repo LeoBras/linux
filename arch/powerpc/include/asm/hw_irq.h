@@ -277,10 +277,6 @@ static inline bool lazy_irq_pending_nocheck(void)
  */
 static inline void may_hard_irq_enable(void)
 {
-	if (!(get_paca()->irq_happened & PACA_IRQ_MUST_HARD_MASK)) {
-		get_paca()->irq_happened &= ~PACA_IRQ_HARD_DIS;
-		__hard_irq_enable();
-	}
 }
 
 static inline bool arch_irq_disabled_regs(struct pt_regs *regs)
