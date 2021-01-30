@@ -21,7 +21,9 @@
 void doorbell_exception(struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
-	const u32 msg = (PPC_DBELL_MSGTYPE + 1) << 27;
+	u32 msg = (6) << 27;
+
+	__asm__ __volatile__ (PPC_MSGCLRP(%0) : : "r" (msg));
 
 	irq_enter();
 	trace_doorbell_entry(regs);
@@ -35,11 +37,12 @@ void doorbell_exception(struct pt_regs *regs)
 
 	smp_ipi_demux_relaxed(); /* already performed the barrier */
 
-	__asm__ __volatile__ (PPC_MSGCLRP(%0) : : "r" (msg));
-
 	trace_doorbell_exit(regs);
 	irq_exit();
 	set_irq_regs(old_regs);
+
+	msg = (7) << 27;
+	__asm__ __volatile__ (PPC_MSGCLRP(%0) : : "r" (msg));
 }
 #else /* CONFIG_SMP */
 void doorbell_exception(struct pt_regs *regs)
