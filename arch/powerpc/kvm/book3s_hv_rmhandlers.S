@@ -656,8 +656,11 @@ BEGIN_FTR_SECTION
 	/* DPDES and VTB are shared between threads */
 	ld	r8, VCORE_DPDES(r5)
 	ld	r7, VCORE_VTB(r5)
+	cmpdi   r8, 0
+	beq     39f
+	li      r8, 0xff
 	mtspr	SPRN_DPDES, r8
-	mtspr	SPRN_VTB, r7
+39:	mtspr	SPRN_VTB, r7
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 
 	/* Mark the subcore state as inside guest */
@@ -1889,9 +1892,6 @@ BEGIN_FTR_SECTION
 	mfspr	r8, SPRN_VTB
 	std	r7, VCORE_DPDES(r5)
 	std	r8, VCORE_VTB(r5)
-	/* clear DPDES so we don't get guest doorbells in the host */
-	li	r8, 0
-	mtspr	SPRN_DPDES, r8
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 
 	/* Subtract timebase offset from timebase */

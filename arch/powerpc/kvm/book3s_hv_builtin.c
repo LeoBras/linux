@@ -851,7 +851,7 @@ void kvmppc_guest_entry_inject_int(struct kvm_vcpu *vcpu)
 	}
 
 	if (vcpu->arch.doorbell_request) {
-		mtspr(SPRN_DPDES, 1);
+		mtspr(SPRN_DPDES, 0xff);
 		vcpu->arch.vcore->dpdes = 1;
 		smp_wmb();
 		vcpu->arch.doorbell_request = 0;

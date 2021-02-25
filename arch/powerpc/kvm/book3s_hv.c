@@ -3480,7 +3480,8 @@ static int kvmhv_load_hv_regs_and_go(struct kvm_vcpu *vcpu, u64 time_limit,
 
 	if (vc->pcr)
 		mtspr(SPRN_PCR, vc->pcr | PCR_MASK);
-	mtspr(SPRN_DPDES, vc->dpdes);
+	if (vc->dpdes)
+		mtspr(SPRN_DPDES, 0xff);
 	mtspr(SPRN_VTB, vc->vtb);
 
 	local_paca->kvm_hstate.host_purr = mfspr(SPRN_PURR);
@@ -3564,7 +3565,7 @@ static int kvmhv_load_hv_regs_and_go(struct kvm_vcpu *vcpu, u64 time_limit,
 
 	vc->dpdes = mfspr(SPRN_DPDES);
 	vc->vtb = mfspr(SPRN_VTB);
-	mtspr(SPRN_DPDES, 0);
+
 	if (vc->pcr)
 		mtspr(SPRN_PCR, PCR_MASK);
 
